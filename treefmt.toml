@@ -1,0 +1,22 @@
+[formatter.nix]
+command = "nixfmt"
+includes = ["*.nix"]
+
+[formatter.toml]
+command = "taplo"
+options = ["format"]
+includes = ["*.toml"]
+
+[formatter.python]
+command = "ruff"
+options = ["format"]
+includes = ["*.py"]
+
+[formatter.markdown]
+command = "mdformat"
+includes = ["*.md"]
+
+[formatter.json]
+command = "prettier"
+options = ["--write"]
+includes = ["*.json"]

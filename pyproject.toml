@@ -1,0 +1,78 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "closest_intent"
+version = "0.1.0"
+description = "Fuzzy-matching conversation agent for Home Assistant.'"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "Charlotte Hartmann Paludo" }]
+dependencies = ["rapidfuzz>=3.5.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-asyncio>=0.21", "pyyaml>=6", "voluptuous>=0.13"]
+dev = ["closest_intent[test]", "ruff>=0.6", "mypy>=1.8"]
+
+[project.urls]
+Homepage = "https://github.com/charludo/hass-closest-intent"
+Issues = "https://github.com/charludo/hass-closest-intent/issues"
+
+[tool.setuptools]
+packages = []
+
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "B",   # flake8-bugbear
+  "UP",  # pyupgrade
+  "SIM", # flake8-simplify
+]
+ignore = [
+  # Allow `lambda` for tiny inline callbacks in tests.
+  "E731",
+  # `B008` (function call in default arg) trips on dataclass field()
+  # idioms; we don't use mutable defaults the dangerous way.
+  "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests intentionally do unusual sys.path tricks and import-after-config.
+"tests/**" = ["E402", "F401"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+filterwarnings = [
+  "error",
+  # rapidfuzz emits DeprecationWarning on some platforms.
+  "ignore::DeprecationWarning:rapidfuzz",
+]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+# Custom_components rely on heavily-dynamic Home Assistant APIs.
+disallow_untyped_defs = false
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+ignore_errors = true
