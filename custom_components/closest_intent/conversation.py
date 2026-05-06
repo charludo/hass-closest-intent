@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable
 
 from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigEntry
@@ -26,7 +27,9 @@ try:
         DEFAULT_THRESHOLD,
         DOMAIN,
         KEY_AGENT_INSTANCES,
+        KEY_CONVERSATION_EXPANSION_RULES,
         KEY_CONVERSATION_INTENTS,
+        KEY_CONVERSATION_LISTS,
     )
     from .matching import (
         Candidate,
@@ -49,7 +52,9 @@ except ImportError:  # pragma: no cover
         DEFAULT_THRESHOLD,
         DOMAIN,
         KEY_AGENT_INSTANCES,
+        KEY_CONVERSATION_EXPANSION_RULES,
         KEY_CONVERSATION_INTENTS,
+        KEY_CONVERSATION_LISTS,
     )
     from matching import (  # type: ignore
         Candidate,
@@ -146,7 +151,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             return pool
 
     def _build_pool(self, language: str) -> tuple[Resolver, list[Candidate]]:
-        resolver = Resolver()
+        resolver = self._build_resolver(language)
         intents = self._gather_intents()
 
         candidates: list[Candidate] = []
@@ -169,6 +174,145 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             len(intents),
         )
         return (resolver, candidates)
+
+    def _build_resolver(self, language: str) -> Resolver:
+        """
+        Pre-compute expansion-rule expansions + slot-list values.
+
+        Two sources, merged into one ``Resolver``:
+
+        - **Hassil's static data** (``home_assistant_intents`` package):
+          Per-language expansion rules and static slot lists.
+          Sampled via ``hassil.sample`` to flatten alternations and
+          nested rules into surface forms.
+        - **HA's runtime registries**:
+          Areas, floors, and exposed entity friendly names.
+          Populated by HA's default agent at recognition time,
+          but we read the same registries directly so we can use the same vocabulary.
+        """
+        resolver = Resolver()
+
+        try:
+            from hassil.intents import (  # type: ignore
+                Intents,
+                RangeSlotList,
+                TextSlotList,
+            )
+            from hassil.sample import sample_expression  # type: ignore
+            from home_assistant_intents import get_intents  # type: ignore
+
+            hassil_available = True
+        except ImportError:
+            _LOGGER.debug("hassil/home_assistant_intents not importable; skipping language pack")
+            hassil_available = False
+            get_intents = None  # type: ignore
+            Intents = None  # type: ignore
+            RangeSlotList = None  # type: ignore
+            TextSlotList = None  # type: ignore
+            sample_expression = None  # type: ignore
+
+        raw = None
+        if hassil_available:
+            try:
+                raw = get_intents(language)  # type: ignore[misc]
+            except Exception:  # pragma: no cover
+                raw = None
+
+        stash = self.hass.data.get(DOMAIN, {})
+        user_lists = dict(stash.get(KEY_CONVERSATION_LISTS) or {})
+        user_rules = dict(stash.get(KEY_CONVERSATION_EXPANSION_RULES) or {})
+        if user_lists or user_rules:
+            raw = dict(raw or {})
+            raw.setdefault("lists", {})
+            raw["lists"].update(user_lists)
+            raw.setdefault("expansion_rules", {})
+            raw["expansion_rules"].update(user_rules)
+            raw.setdefault("intents", {})
+            raw.setdefault("language", language)
+
+        if hassil_available and raw:
+            try:
+                intents = Intents.from_dict(raw)  # type: ignore[union-attr]
+            except Exception:  # pragma: no cover
+                _LOGGER.exception("closest_intent: failed to parse intents for %s", language)
+                intents = None
+
+            if intents is not None:
+                # Expansion rules -> list of surface forms.
+                for name, rule in (intents.expansion_rules or {}).items():
+                    try:
+                        forms = list(_dedupe(sample_expression(rule.expression, intents)))
+                    except Exception:
+                        continue
+                    # Cap rule expansion to keep alternation explosions bounded.
+                    resolver.expansion_rules[name] = forms[: max(self._expansion_cap, 32)]
+
+                # Slot lists -> list of acceptable values.
+                for name, lst in (intents.slot_lists or {}).items():
+                    values = _slot_list_values(
+                        lst, intents, sample_expression, TextSlotList, RangeSlotList
+                    )
+                    if values:
+                        resolver.slot_values[name] = values
+
+        try:
+            from homeassistant.helpers import (
+                area_registry as ar,
+            )
+            from homeassistant.helpers import (
+                entity_registry as er,
+            )
+            from homeassistant.helpers import (
+                floor_registry as fr,
+            )
+        except ImportError:
+            return resolver
+
+        try:
+            areas = ar.async_get(self.hass)
+            area_names: list[str] = []
+            for area in areas.async_list_areas():
+                area_names.append(area.name)
+                if area.aliases:
+                    area_names.extend(area.aliases)
+            if area_names:
+                resolver.slot_values["area"] = sorted(set(area_names))
+        except Exception:
+            _LOGGER.debug("closest_intent: failed to read area registry", exc_info=True)
+
+        try:
+            floors = fr.async_get(self.hass)
+            floor_names: list[str] = [f.name for f in floors.async_list_floors()]
+            if floor_names:
+                resolver.slot_values["floor"] = sorted(set(floor_names))
+        except Exception:
+            _LOGGER.debug("closest_intent: failed to read floor registry", exc_info=True)
+
+        try:
+            ent_reg = er.async_get(self.hass)
+            names: list[str] = []
+            for entity in ent_reg.entities.values():
+                if not _is_exposed(self.hass, entity.entity_id):
+                    continue
+                state = self.hass.states.get(entity.entity_id)
+                if state is not None:
+                    fname = state.attributes.get("friendly_name") or state.name
+                    if fname:
+                        names.append(fname)
+                if entity.aliases:
+                    names.extend(entity.aliases)
+            if names:
+                resolver.slot_values["name"] = sorted(set(names))
+        except Exception:
+            _LOGGER.debug("closest_intent: failed to read entity registry", exc_info=True)
+
+        _LOGGER.debug(
+            "closest_intent[%s]: resolver has %d expansion rules, %d slot lists",
+            language,
+            len(resolver.expansion_rules),
+            len(resolver.slot_values),
+        )
+        return resolver
 
     def _gather_intents(self) -> dict[str, list[str]]:
         gathered: dict[str, list[str]] = {}
@@ -319,3 +463,82 @@ def _no_match(
         response=response,
         conversation_id=user_input.conversation_id,
     )
+
+
+def _dedupe(items: Iterable[str]) -> list[str]:
+    """Stable de-duplicate."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in items:
+        norm = s.strip()
+        if norm and norm not in seen:
+            seen.add(norm)
+            out.append(norm)
+    return out
+
+
+def _slot_list_values(
+    lst,
+    intents,
+    sample_expression,
+    TextSlotList,
+    RangeSlotList,
+) -> list[str]:
+    """
+    Best-effort enumeration of values from a Hassil SlotList.
+
+    - Wildcards return ``[]`` (can't enumerate).
+    - Text lists flatten each value's input pattern via ``sample_expression``.
+    - Range lists enumerate digit forms, word forms (e.g. ``"zwölf"``) are out of
+      scope here, as Hassil resolves them downstream when the canonical sentence is forwarded.
+    """
+    values: list[str] = []
+    try:
+        if isinstance(lst, TextSlotList):
+            for v in getattr(lst, "values", []) or []:
+                expr = getattr(getattr(v, "text_in", None), "expression", None)
+                if expr is None:
+                    continue
+                try:
+                    values.extend(sample_expression(expr, intents))
+                except Exception:
+                    continue
+        elif isinstance(lst, RangeSlotList):
+            from_value = getattr(lst, "from_value", 0)
+            to_value = getattr(lst, "to_value", 0)
+            step = getattr(lst, "step", 1) or 1
+            if from_value <= to_value:
+                values.extend(str(i) for i in range(from_value, to_value + 1, step))
+    except Exception:  # pragma: no cover
+        pass
+    return _dedupe(values)
+
+
+def _is_exposed(hass: HomeAssistant, entity_id: str) -> bool:
+    """
+    Best-effort check that ``entity_id`` is voice-exposed.
+
+    Assume expose is true by default.
+    Not a security concern is unexposed, as we never call any actions or the like,
+    just forward are cleaned/matched sentence to Hassil.
+    If Hassil fucks up on this, not our fault :)
+    """
+    try:
+        from homeassistant.components.conversation import const as conv_const  # type: ignore
+
+        DOMAIN = getattr(conv_const, "DOMAIN", "conversation")
+    except Exception:
+        DOMAIN = "conversation"
+
+    try:
+        from homeassistant.helpers.entity import async_should_expose  # type: ignore
+
+        return async_should_expose(hass, DOMAIN, entity_id)
+    except Exception:
+        pass
+    try:
+        from homeassistant.helpers import exposed_entities  # type: ignore
+
+        return exposed_entities.async_should_expose(hass, DOMAIN, entity_id)
+    except Exception:
+        return True
