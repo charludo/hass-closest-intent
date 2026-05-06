@@ -1,0 +1,11 @@
+{
+  "domain": "closest_intent",
+  "name": "Closest Intent",
+  "version": "0.1.0",
+  "documentation": "https://github.com/charludo/hass-closest-intent",
+  "codeowners": [],
+  "requirements": ["rapidfuzz>=3.5.0"],
+  "dependencies": ["conversation"],
+  "iot_class": "local_push",
+  "config_flow": true
+}
