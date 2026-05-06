@@ -10,9 +10,10 @@ from collections.abc import Iterable
 
 from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import intent as intent_helper
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_call_later
 
 # Importable both as part of the package and as a standalone module for tests.
 try:
@@ -68,6 +69,8 @@ except ImportError:  # pragma: no cover
 
 _LOGGER = logging.getLogger(__name__)
 
+_REGISTRY_REBUILD_DEBOUNCE_S = 2.0
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -89,7 +92,30 @@ async def async_setup_entry(
         entry_id=entry.entry_id,
     )
     hass.data.setdefault(DOMAIN, {}).setdefault(KEY_AGENT_INSTANCES, {})[entry.entry_id] = agent
+
+    # Pick up live option changes without an HA restart.
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     async_add_entities([agent])
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    agent: ClosestIntentAgent | None = (
+        hass.data.get(DOMAIN, {}).get(KEY_AGENT_INSTANCES, {}).get(entry.entry_id)
+    )
+    if agent is None:
+        return
+    options = entry.options or {}
+    data = entry.data
+
+    def opt(key, default):
+        return options.get(key, data.get(key, default))
+
+    agent.apply_options(
+        threshold=opt(CONF_THRESHOLD, DEFAULT_THRESHOLD),
+        expansion_cap=opt(CONF_EXPANSION_CAP, DEFAULT_EXPANSION_CAP),
+        slot_extraction=opt(CONF_SLOT_EXTRACTION, DEFAULT_SLOT_EXTRACTION),
+        base_agent_id=opt(CONF_BASE_AGENT, DEFAULT_BASE_AGENT),
+    )
 
 
 class ClosestIntentAgent(conversation.ConversationEntity):
@@ -119,6 +145,8 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         # languages gets a fresh pool for each one.
         self._pools: dict[str, tuple[Resolver, list[Candidate]]] = {}
         self._pool_locks: dict[str, asyncio.Lock] = {}
+        self._rebuild_handle = None  # async_call_later cancel handle
+        self._unsub_listeners: list = []
 
         self._attr_unique_id = "closest_intent_agent"
 
@@ -133,9 +161,56 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         default_lang = self.hass.config.language or "en"
         await self._async_get_pool(default_lang)
 
+        bus = self.hass.bus
+        for event_name in (
+            "area_registry_updated",
+            "entity_registry_updated",
+            "floor_registry_updated",
+        ):
+            self._unsub_listeners.append(bus.async_listen(event_name, self._on_registry_event))
+
     async def async_will_remove_from_hass(self) -> None:
+        for unsub in self._unsub_listeners:
+            unsub()
+        self._unsub_listeners.clear()
+        if self._rebuild_handle is not None:
+            self._rebuild_handle()
+            self._rebuild_handle = None
         self.hass.data.get(DOMAIN, {}).get(KEY_AGENT_INSTANCES, {}).pop(self._entry_id, None)
         await super().async_will_remove_from_hass()
+
+    def apply_options(
+        self,
+        *,
+        threshold: int,
+        expansion_cap: int,
+        slot_extraction: bool,
+        base_agent_id: str,
+    ) -> None:
+        self._threshold = threshold
+        self._expansion_cap = expansion_cap
+        self._slot_extraction = slot_extraction
+        self._base_agent_id = base_agent_id
+        # Anything affecting candidate composition invalidates the pools.
+        self._pools.clear()
+
+    @callback
+    def _on_registry_event(self, _event) -> None:
+        if self._rebuild_handle is not None:
+            self._rebuild_handle()  # cancels the pending call
+        self._rebuild_handle = async_call_later(
+            self.hass, _REGISTRY_REBUILD_DEBOUNCE_S, self._do_debounced_rebuild
+        )
+
+    async def _do_debounced_rebuild(self, _now) -> None:
+        self._rebuild_handle = None
+        languages = list(self._pools.keys())
+        self._pools.clear()
+        for lang in languages:
+            try:
+                await self._async_get_pool(lang)
+            except Exception:  # pragma: no cover
+                _LOGGER.exception("closest_intent: rebuild for %s failed", lang)
 
     async def _async_get_pool(self, language: str) -> tuple[Resolver, list[Candidate]]:
         cached = self._pools.get(language)
