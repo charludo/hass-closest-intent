@@ -21,10 +21,12 @@ try:
         CONF_BASE_AGENT,
         CONF_DENYLIST,
         CONF_EXPANSION_CAP,
+        CONF_INCLUDE_BUILTINS,
         CONF_SLOT_EXTRACTION,
         CONF_THRESHOLD,
         DEFAULT_BASE_AGENT,
         DEFAULT_EXPANSION_CAP,
+        DEFAULT_INCLUDE_BUILTINS,
         DEFAULT_SLOT_EXTRACTION,
         DEFAULT_THRESHOLD,
         DOMAIN,
@@ -32,6 +34,7 @@ try:
         KEY_CONVERSATION_EXPANSION_RULES,
         KEY_CONVERSATION_INTENTS,
         KEY_CONVERSATION_LISTS,
+        PER_INTENT_CANDIDATE_CAP,
     )
     from .matching import (
         Candidate,
@@ -47,10 +50,12 @@ except ImportError:  # pragma: no cover
         CONF_BASE_AGENT,
         CONF_DENYLIST,
         CONF_EXPANSION_CAP,
+        CONF_INCLUDE_BUILTINS,
         CONF_SLOT_EXTRACTION,
         CONF_THRESHOLD,
         DEFAULT_BASE_AGENT,
         DEFAULT_EXPANSION_CAP,
+        DEFAULT_INCLUDE_BUILTINS,
         DEFAULT_SLOT_EXTRACTION,
         DEFAULT_THRESHOLD,
         DOMAIN,
@@ -58,6 +63,7 @@ except ImportError:  # pragma: no cover
         KEY_CONVERSATION_EXPANSION_RULES,
         KEY_CONVERSATION_INTENTS,
         KEY_CONVERSATION_LISTS,
+        PER_INTENT_CANDIDATE_CAP,
     )
     from matching import (  # type: ignore
         Candidate,
@@ -90,6 +96,7 @@ async def async_setup_entry(
         threshold=opt(CONF_THRESHOLD, DEFAULT_THRESHOLD),
         expansion_cap=opt(CONF_EXPANSION_CAP, DEFAULT_EXPANSION_CAP),
         denylist=opt(CONF_DENYLIST, None),
+        include_builtins=opt(CONF_INCLUDE_BUILTINS, DEFAULT_INCLUDE_BUILTINS),
         slot_extraction=opt(CONF_SLOT_EXTRACTION, DEFAULT_SLOT_EXTRACTION),
         base_agent_id=opt(CONF_BASE_AGENT, DEFAULT_BASE_AGENT),
         entry_id=entry.entry_id,
@@ -117,6 +124,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
         threshold=opt(CONF_THRESHOLD, DEFAULT_THRESHOLD),
         expansion_cap=opt(CONF_EXPANSION_CAP, DEFAULT_EXPANSION_CAP),
         denylist=opt(CONF_DENYLIST, None),
+        include_builtins=opt(CONF_INCLUDE_BUILTINS, DEFAULT_INCLUDE_BUILTINS),
         slot_extraction=opt(CONF_SLOT_EXTRACTION, DEFAULT_SLOT_EXTRACTION),
         base_agent_id=opt(CONF_BASE_AGENT, DEFAULT_BASE_AGENT),
     )
@@ -134,6 +142,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         threshold: int,
         expansion_cap: int,
         denylist: list[str] | None,
+        include_builtins: bool,
         slot_extraction: bool,
         base_agent_id: str,
         entry_id: str,
@@ -142,6 +151,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         self._threshold = threshold
         self._expansion_cap = expansion_cap
         self._denylist = set(denylist) if denylist else None
+        self._include_builtins = include_builtins
         self._slot_extraction = slot_extraction
         self._base_agent_id = base_agent_id
         self._entry_id = entry_id
@@ -149,7 +159,10 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         # Per-language pools: built lazily on first request for that
         # language. A user with multiple Assist pipelines in different
         # languages gets a fresh pool for each one.
-        self._pools: dict[str, tuple[Resolver, list[Candidate]]] = {}
+        # Tuple is (resolver, user_candidates, builtin_candidates).
+        # Builtins are kept separate so we can fall back to them only when
+        # the user pool produces no match.
+        self._pools: dict[str, tuple[Resolver, list[Candidate], list[Candidate]]] = {}
         self._pool_locks: dict[str, asyncio.Lock] = {}
         self._rebuild_handle = None  # async_call_later cancel handle
         self._unsub_listeners: list = []
@@ -191,12 +204,14 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         threshold: int,
         expansion_cap: int,
         denylist: list[str] | None,
+        include_builtins: bool,
         slot_extraction: bool,
         base_agent_id: str,
     ) -> None:
         self._threshold = threshold
         self._expansion_cap = expansion_cap
         self._denylist = set(denylist) if denylist else None
+        self._include_builtins = include_builtins
         self._slot_extraction = slot_extraction
         self._base_agent_id = base_agent_id
         # Anything affecting candidate composition invalidates the pools.
@@ -220,7 +235,9 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             except Exception:  # pragma: no cover
                 _LOGGER.exception("closest_intent: rebuild for %s failed", lang)
 
-    async def _async_get_pool(self, language: str) -> tuple[Resolver, list[Candidate]]:
+    async def _async_get_pool(
+        self, language: str
+    ) -> tuple[Resolver, list[Candidate], list[Candidate]]:
         cached = self._pools.get(language)
         if cached is not None:
             return cached
@@ -233,14 +250,36 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             self._pools[language] = pool
             return pool
 
-    def _build_pool(self, language: str) -> tuple[Resolver, list[Candidate]]:
+    def _build_pool(self, language: str) -> tuple[Resolver, list[Candidate], list[Candidate]]:
         custom_docs = self._load_custom_sentences(language)
         resolver = self._build_resolver(language, custom_docs)
-        intents = self._gather_intents(custom_docs)
 
+        user_intents = self._gather_user_intents(custom_docs)
+        user_candidates = self._expand_intents(user_intents, resolver)
+
+        builtin_candidates: list[Candidate] = []
+        if self._include_builtins:
+            builtin_intents = self._gather_builtin_intents(language, exclude=set(user_intents))
+            builtin_candidates = self._expand_intents(builtin_intents, resolver)
+
+        _LOGGER.info(
+            "closest_intent[%s]: built %d user candidate(s) across %d intent(s); "
+            "%d builtin candidate(s) (builtins=%s)",
+            language,
+            len(user_candidates),
+            len(user_intents),
+            len(builtin_candidates),
+            self._include_builtins,
+        )
+        return (resolver, user_candidates, builtin_candidates)
+
+    def _expand_intents(self, intents: dict[str, list[str]], resolver: Resolver) -> list[Candidate]:
         candidates: list[Candidate] = []
         for intent_name, patterns in intents.items():
+            kept = 0
             for idx, pat in enumerate(patterns):
+                if kept >= PER_INTENT_CANDIDATE_CAP:
+                    break
                 for text, slot_names in expand_pattern(pat, self._expansion_cap, resolver=resolver):
                     candidates.append(
                         Candidate(
@@ -250,14 +289,15 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                             slot_names=slot_names,
                         )
                     )
-
-        _LOGGER.info(
-            "closest_intent[%s]: built %d candidates across %d intents",
-            language,
-            len(candidates),
-            len(intents),
-        )
-        return (resolver, candidates)
+                    kept += 1
+                    if kept >= PER_INTENT_CANDIDATE_CAP:
+                        _LOGGER.debug(
+                            "closest_intent: %s hit per-intent cap (%d), truncating",
+                            intent_name,
+                            PER_INTENT_CANDIDATE_CAP,
+                        )
+                        break
+        return candidates
 
     def _load_custom_sentences(self, language: str) -> list[dict]:
         """
@@ -439,8 +479,9 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         )
         return resolver
 
-    def _gather_intents(self, custom_docs: list[dict]) -> dict[str, list[str]]:
+    def _gather_user_intents(self, custom_docs: list[dict]) -> dict[str, list[str]]:
         gathered: dict[str, list[str]] = {}
+
         conv_intents = self.hass.data.get(DOMAIN, {}).get(KEY_CONVERSATION_INTENTS, {})
         for name, patterns in conv_intents.items():
             if isinstance(patterns, str):
@@ -456,23 +497,54 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 if sentences:
                     gathered.setdefault(name, []).extend(sentences)
 
-        if self._denylist is not None:
-            gathered = {k: v for k, v in gathered.items() if k not in self._denylist}
+        return self._apply_denylist(gathered)
 
-        return gathered
+    def _gather_builtin_intents(self, language: str, *, exclude: set[str]) -> dict[str, list[str]]:
+        gathered: dict[str, list[str]] = {}
+        try:
+            from home_assistant_intents import get_intents  # type: ignore
+
+            builtin = get_intents(language) or {}
+        except Exception:  # pragma: no cover
+            _LOGGER.warning(
+                "closest_intent: include_builtins=true but home_assistant_intents "
+                "is unavailable; skipping built-in patterns"
+            )
+            return gathered
+
+        for name, payload in (builtin.get("intents") or {}).items():
+            if name in exclude:
+                continue
+            sentences: list[str] = []
+            for block in payload.get("data") or []:
+                sentences.extend(block.get("sentences") or [])
+            if sentences:
+                gathered[name] = sentences
+
+        return self._apply_denylist(gathered)
+
+    def _apply_denylist(self, intents: dict[str, list[str]]) -> dict[str, list[str]]:
+        if self._denylist is None:
+            return intents
+        return {k: v for k, v in intents.items() if k not in self._denylist}
 
     async def async_process(
         self, user_input: conversation.ConversationInput
     ) -> conversation.ConversationResult:
         language = user_input.language or self.hass.config.language or "en"
         try:
-            resolver, candidates = await self._async_get_pool(language)
+            resolver, user_candidates, builtin_candidates = await self._async_get_pool(language)
         except Exception:  # pragma: no cover
             _LOGGER.exception("closest_intent: failed to build pool for language %s", language)
-            resolver, candidates = Resolver(), []
+            resolver, user_candidates, builtin_candidates = Resolver(), [], []
 
         try:
-            canonical = self._best_canonical(user_input, resolver, candidates)
+            canonical = self._best_canonical(user_input, resolver, user_candidates)
+            if canonical is None and builtin_candidates:
+                # User pool produced nothing usable; fall back to builtins so
+                # vanilla "turn on the light" still resolves when no custom
+                # intent covers it.
+                canonical = self._best_canonical(user_input, resolver, builtin_candidates)
         except Exception:  # pragma: no cover
             _LOGGER.exception("closest_intent: unexpected error matching %r", user_input.text)
             canonical = None
@@ -571,18 +643,24 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             "entry_id": self._entry_id,
             "threshold": self._threshold,
             "expansion_cap": self._expansion_cap,
+            "include_builtins": self._include_builtins,
             "slot_extraction": self._slot_extraction,
             "base_agent_id": self._base_agent_id,
             "denylist": sorted(self._denylist) if self._denylist else None,
             "languages": {},
         }
-        for lang, (resolver, candidates) in self._pools.items():
-            by_intent: dict[str, list[str]] = {}
-            for c in candidates:
-                by_intent.setdefault(c.intent, []).append(c.text)
+        for lang, (resolver, user_candidates, builtin_candidates) in self._pools.items():
+            user_by_intent: dict[str, list[str]] = {}
+            for c in user_candidates:
+                user_by_intent.setdefault(c.intent, []).append(c.text)
+            builtin_by_intent: dict[str, list[str]] = {}
+            for c in builtin_candidates:
+                builtin_by_intent.setdefault(c.intent, []).append(c.text)
             out["languages"][lang] = {
-                "candidate_count": len(candidates),
-                "intents": by_intent,
+                "user_candidate_count": len(user_candidates),
+                "builtin_candidate_count": len(builtin_candidates),
+                "user_intents": user_by_intent,
+                "builtin_intents": builtin_by_intent,
                 "expansion_rules": {k: v for k, v in resolver.expansion_rules.items()},
                 "slot_values": {k: v for k, v in resolver.slot_values.items()},
             }
