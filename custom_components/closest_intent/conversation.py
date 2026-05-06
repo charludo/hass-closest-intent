@@ -226,8 +226,9 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             return pool
 
     def _build_pool(self, language: str) -> tuple[Resolver, list[Candidate]]:
-        resolver = self._build_resolver(language)
-        intents = self._gather_intents()
+        custom_docs = self._load_custom_sentences(language)
+        resolver = self._build_resolver(language, custom_docs)
+        intents = self._gather_intents(custom_docs)
 
         candidates: list[Candidate] = []
         for intent_name, patterns in intents.items():
@@ -250,7 +251,43 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         )
         return (resolver, candidates)
 
-    def _build_resolver(self, language: str) -> Resolver:
+    def _load_custom_sentences(self, language: str) -> list[dict]:
+        """
+        Walk ``<configDir>/custom_sentences/<language>/*.yaml`` and load each.
+
+        Files written by ``hass.voice.custom_sentences`` (or hand-placed by the user)
+        live there and contain Hassil-format ``intents`` / ``lists`` / ``expansion_rules``.
+        We merge their contents into both the resolver and the candidate pool so closest_intent
+        sees the same vocabulary HA's default agent does.
+        """
+        import os
+
+        try:
+            import yaml  # type: ignore
+        except ImportError:
+            _LOGGER.warn("PyYAML not importable; skipping custom_sentences")
+            return []
+
+        base = self.hass.config.path("custom_sentences", language)
+        if not os.path.isdir(base):
+            return []
+
+        docs: list[dict] = []
+        for fname in sorted(os.listdir(base)):
+            if not fname.endswith((".yaml", ".yml")):
+                continue
+            path = os.path.join(base, fname)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    doc = yaml.safe_load(f)
+            except Exception:
+                _LOGGER.warning("closest_intent: failed to load %s", path, exc_info=True)
+                continue
+            if isinstance(doc, dict):
+                docs.append(doc)
+        return docs
+
+    def _build_resolver(self, language: str, custom_docs: list[dict]) -> Resolver:
         """
         Pre-compute expansion-rule expansions + slot-list values.
 
@@ -296,6 +333,11 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         stash = self.hass.data.get(DOMAIN, {})
         user_lists = dict(stash.get(KEY_CONVERSATION_LISTS) or {})
         user_rules = dict(stash.get(KEY_CONVERSATION_EXPANSION_RULES) or {})
+        for doc in custom_docs:
+            for k, v in (doc.get("lists") or {}).items():
+                user_lists[k] = v
+            for k, v in (doc.get("expansion_rules") or {}).items():
+                user_rules[k] = v
         if user_lists or user_rules:
             raw = dict(raw or {})
             raw.setdefault("lists", {})
@@ -389,7 +431,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         )
         return resolver
 
-    def _gather_intents(self) -> dict[str, list[str]]:
+    def _gather_intents(self, custom_docs: list[dict]) -> dict[str, list[str]]:
         gathered: dict[str, list[str]] = {}
         conv_intents = self.hass.data.get(DOMAIN, {}).get(KEY_CONVERSATION_INTENTS, {})
         for name, patterns in conv_intents.items():
@@ -397,6 +439,15 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 gathered[name] = [patterns]
             else:
                 gathered[name] = list(patterns)
+
+        for doc in custom_docs:
+            for name, payload in (doc.get("intents") or {}).items():
+                sentences: list[str] = []
+                for block in payload.get("data") or []:
+                    sentences.extend(block.get("sentences") or [])
+                if sentences:
+                    gathered.setdefault(name, []).extend(sentences)
+
         return gathered
 
     async def async_process(
