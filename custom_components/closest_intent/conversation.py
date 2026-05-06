@@ -19,6 +19,7 @@ from homeassistant.helpers.event import async_call_later
 try:
     from .const import (
         CONF_BASE_AGENT,
+        CONF_DENYLIST,
         CONF_EXPANSION_CAP,
         CONF_SLOT_EXTRACTION,
         CONF_THRESHOLD,
@@ -44,6 +45,7 @@ try:
 except ImportError:  # pragma: no cover
     from const import (  # type: ignore
         CONF_BASE_AGENT,
+        CONF_DENYLIST,
         CONF_EXPANSION_CAP,
         CONF_SLOT_EXTRACTION,
         CONF_THRESHOLD,
@@ -87,6 +89,7 @@ async def async_setup_entry(
         hass,
         threshold=opt(CONF_THRESHOLD, DEFAULT_THRESHOLD),
         expansion_cap=opt(CONF_EXPANSION_CAP, DEFAULT_EXPANSION_CAP),
+        denylist=opt(CONF_DENYLIST, None),
         slot_extraction=opt(CONF_SLOT_EXTRACTION, DEFAULT_SLOT_EXTRACTION),
         base_agent_id=opt(CONF_BASE_AGENT, DEFAULT_BASE_AGENT),
         entry_id=entry.entry_id,
@@ -113,6 +116,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
     agent.apply_options(
         threshold=opt(CONF_THRESHOLD, DEFAULT_THRESHOLD),
         expansion_cap=opt(CONF_EXPANSION_CAP, DEFAULT_EXPANSION_CAP),
+        denylist=opt(CONF_DENYLIST, None),
         slot_extraction=opt(CONF_SLOT_EXTRACTION, DEFAULT_SLOT_EXTRACTION),
         base_agent_id=opt(CONF_BASE_AGENT, DEFAULT_BASE_AGENT),
     )
@@ -129,6 +133,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         *,
         threshold: int,
         expansion_cap: int,
+        denylist: list[str] | None,
         slot_extraction: bool,
         base_agent_id: str,
         entry_id: str,
@@ -136,6 +141,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         self.hass = hass
         self._threshold = threshold
         self._expansion_cap = expansion_cap
+        self._denylist = set(denylist) if denylist else None
         self._slot_extraction = slot_extraction
         self._base_agent_id = base_agent_id
         self._entry_id = entry_id
@@ -184,11 +190,13 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         *,
         threshold: int,
         expansion_cap: int,
+        denylist: list[str] | None,
         slot_extraction: bool,
         base_agent_id: str,
     ) -> None:
         self._threshold = threshold
         self._expansion_cap = expansion_cap
+        self._denylist = set(denylist) if denylist else None
         self._slot_extraction = slot_extraction
         self._base_agent_id = base_agent_id
         # Anything affecting candidate composition invalidates the pools.
@@ -448,6 +456,9 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 if sentences:
                     gathered.setdefault(name, []).extend(sentences)
 
+        if self._denylist is not None:
+            gathered = {k: v for k, v in gathered.items() if k not in self._denylist}
+
         return gathered
 
     async def async_process(
@@ -562,6 +573,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             "expansion_cap": self._expansion_cap,
             "slot_extraction": self._slot_extraction,
             "base_agent_id": self._base_agent_id,
+            "denylist": sorted(self._denylist) if self._denylist else None,
             "languages": {},
         }
         for lang, (resolver, candidates) in self._pools.items():

@@ -6,6 +6,7 @@ DOMAIN = "closest_intent"
 
 CONF_THRESHOLD = "threshold"
 CONF_EXPANSION_CAP = "expansion_cap"
+CONF_DENYLIST = "denylist"
 CONF_SLOT_EXTRACTION = "slot_extraction"
 CONF_BASE_AGENT = "base_agent"
 
