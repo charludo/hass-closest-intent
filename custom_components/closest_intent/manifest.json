@@ -3,6 +3,7 @@
   "name": "Closest Intent",
   "version": "0.1.0",
   "documentation": "https://github.com/charludo/hass-closest-intent",
+  "issue_tracker": "https://github.com/charludo/hass-closest-intent/issues",
   "codeowners": ["@charludo"],
   "requirements": ["rapidfuzz>=3.5.0"],
   "dependencies": ["conversation"],
