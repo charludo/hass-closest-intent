@@ -1,5 +1,13 @@
 """
 Hassil-pattern expansion + RapidFuzz scoring + slot extraction.
+
+Optionally augmented by a :class:`Resolver` that holds Hassil expansion
+rules (``<rule>`` references) and slot-list values (``{list}`` look-ups).
+When passed in, patterns get richer pre-expansion (so user patterns that
+reference HA built-in rules like ``<set>`` actually score correctly)
+and captured slot text gets fuzz-resolved against the slot list
+(e.g. ``"livg ruom"`` becomes ``"Living Room"`` before being substituted
+ into the canonical sentence).
 """
 
 from __future__ import annotations
@@ -19,8 +27,70 @@ except ImportError:  # pragma: no cover
 _LOGGER = logging.getLogger(__name__)
 
 _SLOT_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)(?::[a-zA-Z_][a-zA-Z0-9_]*)?\}")
+_RULE_RE = re.compile(r"<([a-zA-Z_][a-zA-Z0-9_]*)>")
 _ALT_RE = re.compile(r"\(([^()]+)\)")
 _OPT_RE = re.compile(r"\[([^\[\]]+)\]")
+
+
+@dataclass
+class Resolver:
+    """Pre-computed pools for ``<rule>`` and ``{list}`` references."""
+
+    expansion_rules: dict[str, list[str]] = field(default_factory=dict)
+    slot_values: dict[str, list[str]] = field(default_factory=dict)
+
+    def inline_rules(self, pattern: str) -> str:
+        """Replace ``<rule>`` references in ``pattern`` with ``(form1|form2|...)``.
+
+        Recursive!! Undefined rules ignored.
+        """
+        seen_in_chain: set[str] = set()
+        return self._inline_rules_inner(pattern, seen_in_chain, depth=0)
+
+    def _inline_rules_inner(self, pattern: str, seen: set[str], depth: int) -> str:
+        if depth > 10:
+            return pattern  # cycle guard
+
+        def sub(m: re.Match[str]) -> str:
+            rule = m.group(1)
+            if rule in seen or rule not in self.expansion_rules:
+                return m.group(0)
+            forms = self.expansion_rules[rule]
+            if not forms:
+                return m.group(0)
+            inner = "(" + "|".join(forms) + ")"
+            return self._inline_rules_inner(inner, seen | {rule}, depth + 1)
+
+        return _RULE_RE.sub(sub, pattern)
+
+    def resolve_slot(self, captured: str, list_name: str | None, threshold: int = 70) -> str:
+        """Fuzz-match ``captured`` against the ``list_name`` values.
+
+        Returns the closest known value if it scores above ``threshold``.
+        Otherwise, returns ``captured`` unchanged so the canonical sentence
+        carries through the user's original speech (and Hassil downstream
+        either resolves it via its own rules or politely fails).
+        """
+        if not captured or not list_name:
+            return captured
+        values = self.slot_values.get(list_name)
+        if not values:
+            return captured
+
+        captured_norm = captured.strip().lower()
+        for v in values:
+            if v.lower() == captured_norm:
+                return v
+
+        best: str | None = None
+        best_score = 0
+        for v in values:
+            s = int(fuzz.token_sort_ratio(captured_norm, v.lower()))
+            if s > best_score:
+                best, best_score = v, s
+        if best is not None and best_score >= threshold:
+            return best
+        return captured
 
 
 @dataclass
@@ -39,7 +109,8 @@ class Candidate:
     slot_names: list[str] = field(default_factory=list)
     """
     Per Hassil's ``{LIST:CAPTURE}`` syntax, this is the *list* name in
-    each slot position.
+    each slot position. Used to look up resolver values.
+    HA's downstream capture-name (CAPTURE in the pattern) is its own concern.
     """
 
     @property
@@ -47,12 +118,21 @@ class Candidate:
         return bool(self.slot_names)
 
 
-def expand_pattern(pattern: str, cap: int) -> list[tuple[str, list[str]]]:
+def expand_pattern(
+    pattern: str,
+    cap: int,
+    resolver: Resolver | None = None,
+) -> list[tuple[str, list[str]]]:
     """
     Expand a Hassil-style pattern into ``[(text, slot_lists), ...]``.
 
-    Handles ``[optional]``, ``(a|b|c)``, ``{slot}``/``{slot:capture}``.
+    Handles ``[optional]``, ``(a|b|c)``, ``{slot}``/``{slot:capture}`` and,
+    if a ``resolver`` is supplied, ``<rule>`` references (inlined into
+    alternatives before ordinary expansion runs).
     """
+    if resolver is not None:
+        pattern = resolver.inline_rules(pattern)
+
     slot_lists: list[str] = []
 
     def _slot_sub(m: re.Match[str]) -> str:
@@ -133,6 +213,9 @@ def _anchor_offset_tokens(anchor: str, user_norm: str, *, from_end: bool) -> int
     """
     Return token count between ``anchor``'s alignment and the
     relevant edge of ``user_norm``, or ``None`` if no usable alignment.
+
+    ``from_end=False`` measures tokens before the anchor,
+    ``from_end=True`` measures tokens after the anchor's end.
     """
     if not anchor:
         return 0
@@ -156,6 +239,8 @@ def _anchor_penalty(parts: list[str], user_norm: str) -> int:
     at (or very near) the start of user input. If it lands several
     tokens deep, the candidate doesn't actually fit the user text shape,
     even though the substring is present and ``partial_ratio`` happily scores 100.
+
+    Same idea at the trailing edge for ``"{item} to the shopping list"``.
 
     Patterns with a slot at the boundary (empty leading/trailing fixed text)
     are unconstrained at that edge, since the slot can soak up
@@ -193,7 +278,10 @@ def score(user_text: str, candidate_text: str) -> int:
     - **No slots**: ``token_sort_ratio`` on the whole phrase.
     - **With slots**: ``partial_ratio`` on the candidate's *fixed parts*
       against the full user text, minus an edge-anchor misalignment
-      penalty (see ``_anchor_penalty``).
+      penalty (see ``_anchor_penalty``). Finds the best contiguous window
+      of the fixed parts within the user input, but rejects matches
+      where the leading/trailing fixed anchor doesn't actually sit at
+      the corresponding edge of the user phrase.
     """
     user_norm = _normalise(user_text)
     cand_stripped = re.sub(r"\s+", " ", candidate_text.replace(SLOT_WILDCARD, " ")).strip()
@@ -288,6 +376,8 @@ def _align_fixed_part(fixed: str, user: str, start: int) -> tuple[int, int] | No
       1. ``partial_ratio_alignment`` finds a starting point with merged-token tolerance
       2. We then enumerate word-boundary end positions in the input,
          and pick the one with the highest ``fuzz.ratio`` against ``fixed``.
+
+    Slot captures end up on token boundaries unless the input is genuinely mid-word.
     """
     sub = user[start:]
     if not fixed:
@@ -313,7 +403,10 @@ def extract_slots(user_text: str, candidate: Candidate) -> list[str] | None:
 
     Character-level fuzzy alignment of each fixed part. Slot value is
     whatever lies between adjacent fixed parts (or between a fixed part
-    and the end of the user text).
+    and the end of the user text). Imperfect captures (extra leading
+    chars from a misaligned boundary) get cleaned up downstream by
+    ``Resolver.resolve_slot`` fuzz-matching against the slot's known
+    values.
 
     Returns captured segments in left-to-right slot order, or ``None`` if
     alignment fails.
@@ -349,13 +442,30 @@ def extract_slots(user_text: str, candidate: Candidate) -> list[str] | None:
     return captured
 
 
-def build_canonical(candidate: Candidate, captured: list[str]) -> str:
-    """Reconstruct a clean sentence from ``candidate`` with ``captured`` slot values."""
+def build_canonical(
+    candidate: Candidate,
+    captured: list[str],
+    resolver: Resolver | None = None,
+    slot_resolution_threshold: int = 70,
+) -> str:
+    """
+    Reconstruct a clean sentence from ``candidate`` with slot values.
+
+    If ``resolver`` is supplied, each captured slot value is fuzz-matched
+    against the slot's known values (``resolver.slot_values[list_name]``)
+    and replaced with the closest known value when one scores above ``slot_resolution_threshold``.
+    Otherwise (or when nothing scores high enough) the user's raw spoken text is preserved.
+    """
     if SLOT_WILDCARD not in candidate.text:
         return candidate.text
     parts = candidate.text.split(SLOT_WILDCARD)
     out: list[str] = [parts[0]]
     for i, raw in enumerate(captured):
-        out.append(raw)
+        list_name = candidate.slot_names[i] if i < len(candidate.slot_names) else None
+        if resolver is not None:
+            value = resolver.resolve_slot(raw, list_name, slot_resolution_threshold)
+        else:
+            value = raw
+        out.append(value)
         out.append(parts[i + 1])
     return _normalise("".join(out))
