@@ -117,7 +117,7 @@ def _make_agent(
     denylist=None,
     include_builtins: bool = False,
     slot_extraction: bool = True,
-    base_agent_id: str = "conversation.home_assistant",
+    fallback_agent_id: str = "conversation.home_assistant",
 ) -> ClosestIntentAgent:
     return ClosestIntentAgent(
         hass,
@@ -126,7 +126,7 @@ def _make_agent(
         denylist=denylist,
         include_builtins=include_builtins,
         slot_extraction=slot_extraction,
-        base_agent_id=base_agent_id,
+        fallback_agent_id=fallback_agent_id,
         entry_id="TESTENTRY",
     )
 
@@ -359,7 +359,7 @@ async def test_apply_options_clears_pools(hass, _capture_async_converse):
         denylist=None,
         include_builtins=False,
         slot_extraction=True,
-        base_agent_id="conversation.home_assistant",
+        fallback_agent_id="conversation.home_assistant",
     )
     assert agent._pools == {}
 

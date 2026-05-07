@@ -14,13 +14,13 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
-    CONF_BASE_AGENT,
+    CONF_FALLBACK_AGENT,
     CONF_DENYLIST,
     CONF_EXPANSION_CAP,
     CONF_INCLUDE_BUILTINS,
     CONF_SLOT_EXTRACTION,
     CONF_THRESHOLD,
-    DEFAULT_BASE_AGENT,
+    DEFAULT_FALLBACK_AGENT,
     DEFAULT_EXPANSION_CAP,
     DEFAULT_INCLUDE_BUILTINS,
     DEFAULT_SLOT_EXTRACTION,
@@ -71,7 +71,7 @@ def _build_schema(
             )
         )
 
-    base_agent_default = defaults.get(CONF_BASE_AGENT, DEFAULT_BASE_AGENT)
+    fallback_agent_default = defaults.get(CONF_FALLBACK_AGENT, DEFAULT_FALLBACK_AGENT)
     denylist_default = defaults.get(CONF_DENYLIST) or []
 
     return vol.Schema(
@@ -105,8 +105,8 @@ def _build_schema(
                 default=defaults.get(CONF_INCLUDE_BUILTINS, DEFAULT_INCLUDE_BUILTINS),
             ): selector.BooleanSelector(),
             vol.Required(
-                CONF_BASE_AGENT,
-                default=base_agent_default,
+                CONF_FALLBACK_AGENT,
+                default=fallback_agent_default,
             ): selector.EntitySelector(selector.EntitySelectorConfig(domain="conversation")),
         }
     )

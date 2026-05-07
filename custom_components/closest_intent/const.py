@@ -9,15 +9,16 @@ CONF_EXPANSION_CAP = "expansion_cap"
 CONF_DENYLIST = "denylist"
 CONF_INCLUDE_BUILTINS = "include_builtins"
 CONF_SLOT_EXTRACTION = "slot_extraction"
-CONF_BASE_AGENT = "base_agent"
+CONF_FALLBACK_AGENT = "fallback_agent"
 
 DEFAULT_THRESHOLD = 70
 DEFAULT_EXPANSION_CAP = 16
 DEFAULT_INCLUDE_BUILTINS = False
 DEFAULT_SLOT_EXTRACTION = True
-# Where to forward the canonical sentence after a fuzzy match. Default is
-# HA's bundled conversation agent. Be careful not to create a loop...
-DEFAULT_BASE_AGENT = "conversation.home_assistant"
+# Fallback conversation agent, used only when hassil errors or returns no
+# intent match. The canonical sentence itself always goes to hassil first.
+# Be careful not to create a loop...
+DEFAULT_FALLBACK_AGENT = "conversation.home_assistant"
 
 # Stash keys in `hass.data[DOMAIN]`.
 KEY_CONVERSATION_INTENTS = "_conversation_intents"

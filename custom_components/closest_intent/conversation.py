@@ -18,13 +18,13 @@ from homeassistant.helpers.event import async_call_later
 # Importable both as part of the package and as a standalone module for tests.
 try:
     from .const import (
-        CONF_BASE_AGENT,
+        CONF_FALLBACK_AGENT,
         CONF_DENYLIST,
         CONF_EXPANSION_CAP,
         CONF_INCLUDE_BUILTINS,
         CONF_SLOT_EXTRACTION,
         CONF_THRESHOLD,
-        DEFAULT_BASE_AGENT,
+        DEFAULT_FALLBACK_AGENT,
         DEFAULT_EXPANSION_CAP,
         DEFAULT_INCLUDE_BUILTINS,
         DEFAULT_SLOT_EXTRACTION,
@@ -47,13 +47,13 @@ try:
     )
 except ImportError:  # pragma: no cover
     from const import (  # type: ignore
-        CONF_BASE_AGENT,
+        CONF_FALLBACK_AGENT,
         CONF_DENYLIST,
         CONF_EXPANSION_CAP,
         CONF_INCLUDE_BUILTINS,
         CONF_SLOT_EXTRACTION,
         CONF_THRESHOLD,
-        DEFAULT_BASE_AGENT,
+        DEFAULT_FALLBACK_AGENT,
         DEFAULT_EXPANSION_CAP,
         DEFAULT_INCLUDE_BUILTINS,
         DEFAULT_SLOT_EXTRACTION,
@@ -79,6 +79,8 @@ _LOGGER = logging.getLogger(__name__)
 
 _REGISTRY_REBUILD_DEBOUNCE_S = 2.0
 
+_HASSIL_AGENT_ID = "conversation.home_assistant"
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -98,7 +100,7 @@ async def async_setup_entry(
         denylist=opt(CONF_DENYLIST, None),
         include_builtins=opt(CONF_INCLUDE_BUILTINS, DEFAULT_INCLUDE_BUILTINS),
         slot_extraction=opt(CONF_SLOT_EXTRACTION, DEFAULT_SLOT_EXTRACTION),
-        base_agent_id=opt(CONF_BASE_AGENT, DEFAULT_BASE_AGENT),
+        fallback_agent_id=opt(CONF_FALLBACK_AGENT, DEFAULT_FALLBACK_AGENT),
         entry_id=entry.entry_id,
     )
     hass.data.setdefault(DOMAIN, {}).setdefault(KEY_AGENT_INSTANCES, {})[entry.entry_id] = agent
@@ -126,7 +128,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
         denylist=opt(CONF_DENYLIST, None),
         include_builtins=opt(CONF_INCLUDE_BUILTINS, DEFAULT_INCLUDE_BUILTINS),
         slot_extraction=opt(CONF_SLOT_EXTRACTION, DEFAULT_SLOT_EXTRACTION),
-        base_agent_id=opt(CONF_BASE_AGENT, DEFAULT_BASE_AGENT),
+        fallback_agent_id=opt(CONF_FALLBACK_AGENT, DEFAULT_FALLBACK_AGENT),
     )
 
 
@@ -144,7 +146,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         denylist: list[str] | None,
         include_builtins: bool,
         slot_extraction: bool,
-        base_agent_id: str,
+        fallback_agent_id: str,
         entry_id: str,
     ) -> None:
         self.hass = hass
@@ -153,7 +155,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         self._denylist = set(denylist) if denylist else None
         self._include_builtins = include_builtins
         self._slot_extraction = slot_extraction
-        self._base_agent_id = base_agent_id
+        self._fallback_agent_id = fallback_agent_id
         self._entry_id = entry_id
 
         # Per-language pools: built lazily on first request for that
@@ -206,14 +208,14 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         denylist: list[str] | None,
         include_builtins: bool,
         slot_extraction: bool,
-        base_agent_id: str,
+        fallback_agent_id: str,
     ) -> None:
         self._threshold = threshold
         self._expansion_cap = expansion_cap
         self._denylist = set(denylist) if denylist else None
         self._include_builtins = include_builtins
         self._slot_extraction = slot_extraction
-        self._base_agent_id = base_agent_id
+        self._fallback_agent_id = fallback_agent_id
         # Anything affecting candidate composition invalidates the pools.
         self._pools.clear()
 
@@ -551,18 +553,41 @@ class ClosestIntentAgent(conversation.ConversationEntity):
 
         forwarded_text = canonical if canonical is not None else user_input.text
 
+        hassil_result = None
         try:
-            return await conversation.async_converse(
+            hassil_result = await conversation.async_converse(
                 hass=self.hass,
                 text=forwarded_text,
                 conversation_id=user_input.conversation_id,
                 context=user_input.context,
                 language=user_input.language,
-                agent_id=self._base_agent_id,
+                agent_id=_HASSIL_AGENT_ID,
             )
         except Exception:
-            _LOGGER.exception("closest_intent: forwarding to %s failed", self._base_agent_id)
-            return _no_match(user_input)
+            _LOGGER.exception(
+                "closest_intent: hassil forwarding failed for %r", forwarded_text
+            )
+
+        if hassil_result is not None and not _is_error_result(hassil_result):
+            return hassil_result
+
+        if self._fallback_agent_id == _HASSIL_AGENT_ID:
+            return hassil_result if hassil_result is not None else _no_match(user_input)
+
+        try:
+            return await conversation.async_converse(
+                hass=self.hass,
+                text=user_input.text,
+                conversation_id=user_input.conversation_id,
+                context=user_input.context,
+                language=user_input.language,
+                agent_id=self._fallback_agent_id,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "closest_intent: fallback agent %s failed", self._fallback_agent_id
+            )
+            return hassil_result if hassil_result is not None else _no_match(user_input)
 
     def _best_canonical(
         self,
@@ -609,7 +634,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             score_value,
             captured,
             canonical,
-            self._base_agent_id,
+            self._fallback_agent_id,
         )
         return canonical
 
@@ -786,7 +811,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             "expansion_cap": self._expansion_cap,
             "include_builtins": self._include_builtins,
             "slot_extraction": self._slot_extraction,
-            "base_agent_id": self._base_agent_id,
+            "fallback_agent_id": self._fallback_agent_id,
             "denylist": sorted(self._denylist) if self._denylist else None,
             "languages": {},
         }
@@ -806,6 +831,12 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 "slot_values": {k: v for k, v in resolver.slot_values.items()},
             }
         return out
+
+
+def _is_error_result(result: conversation.ConversationResult) -> bool:
+    """Did the agent return a recognizable failure response?"""
+    response = getattr(result, "response", None)
+    return getattr(response, "error_code", None) is not None
 
 
 def _no_match(

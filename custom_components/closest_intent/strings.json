@@ -3,14 +3,14 @@
     "step": {
       "user": {
         "title": "Closest Intent",
-        "description": "Fuzzy-match STT output against your conversation intents and forwards the canonical sentence to a base conversation agent.",
+        "description": "Fuzzy-match STT output against your conversation intents and forward the canonical sentence to hassil. A fallback conversation agent can be configured for when hassil can't handle the result.",
         "data": {
           "threshold": "Match threshold (higher = stricter)",
           "expansion_cap": "Pattern expansion cap (0 disables [...] / (a|b))",
           "denylist": "Exclude these intent names from matching (empty = none excluded)",
           "slot_extraction": "Extract slot values from user speech",
           "include_builtins": "Also fuzzy-match Home Assistant's built-in intents (HassTurnOn etc.). Not recommended",
-          "base_agent": "Forward canonical sentence to this conversation agent"
+          "fallback_agent": "Fallback conversation agent (used only when hassil errors or returns no match)"
         }
       }
     },
@@ -29,7 +29,7 @@
           "denylist": "Exclude these intent names from matching (empty = none excluded)",
           "slot_extraction": "Extract slot values from user speech",
           "include_builtins": "Also fuzzy-match Home Assistant's built-in intents (HassTurnOn etc.). Not recommended",
-          "base_agent": "Forward canonical sentence to this conversation agent"
+          "fallback_agent": "Fallback conversation agent (used only when hassil errors or returns no match)"
         }
       }
     }

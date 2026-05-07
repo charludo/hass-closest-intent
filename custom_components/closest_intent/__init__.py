@@ -15,13 +15,13 @@ from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, Supp
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
-    CONF_BASE_AGENT,
+    CONF_FALLBACK_AGENT,
     CONF_DENYLIST,
     CONF_EXPANSION_CAP,
     CONF_INCLUDE_BUILTINS,
     CONF_SLOT_EXTRACTION,
     CONF_THRESHOLD,
-    DEFAULT_BASE_AGENT,
+    DEFAULT_FALLBACK_AGENT,
     DEFAULT_EXPANSION_CAP,
     DEFAULT_INCLUDE_BUILTINS,
     DEFAULT_SLOT_EXTRACTION,
@@ -55,7 +55,7 @@ CONFIG_SCHEMA = vol.Schema(
                 vol.Optional(CONF_SLOT_EXTRACTION, default=DEFAULT_SLOT_EXTRACTION): cv.boolean,
                 # Conversation entity to forward the canonical sentence to after a fuzzy match.
                 # Default is HA's bundled agent.
-                vol.Optional(CONF_BASE_AGENT, default=DEFAULT_BASE_AGENT): cv.string,
+                vol.Optional(CONF_FALLBACK_AGENT, default=DEFAULT_FALLBACK_AGENT): cv.string,
             }
         )
     },
@@ -120,8 +120,8 @@ def _format_dump_summary(states: dict[str, dict]) -> str:
             f"include_builtins={state['include_builtins']} "
             f"slot_extraction={state['slot_extraction']}"
         )
-        if state.get("base_agent_id"):
-            lines.append(f"  base_agent={state['base_agent_id']}")
+        if state.get("fallback_agent_id"):
+            lines.append(f"  fallback_agent={state['fallback_agent_id']}")
         if state.get("denylist"):
             lines.append(f"  denylist={', '.join(state['denylist'])}")
         for lang, ls in state["languages"].items():
