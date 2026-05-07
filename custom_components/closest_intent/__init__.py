@@ -15,14 +15,14 @@ from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, Supp
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
-    CONF_FALLBACK_AGENT,
     CONF_DENYLIST,
     CONF_EXPANSION_CAP,
+    CONF_FALLBACK_AGENT,
     CONF_INCLUDE_BUILTINS,
     CONF_SLOT_EXTRACTION,
     CONF_THRESHOLD,
-    DEFAULT_FALLBACK_AGENT,
     DEFAULT_EXPANSION_CAP,
+    DEFAULT_FALLBACK_AGENT,
     DEFAULT_INCLUDE_BUILTINS,
     DEFAULT_SLOT_EXTRACTION,
     DEFAULT_THRESHOLD,

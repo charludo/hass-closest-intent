@@ -18,14 +18,14 @@ from homeassistant.helpers.event import async_call_later
 # Importable both as part of the package and as a standalone module for tests.
 try:
     from .const import (
-        CONF_FALLBACK_AGENT,
         CONF_DENYLIST,
         CONF_EXPANSION_CAP,
+        CONF_FALLBACK_AGENT,
         CONF_INCLUDE_BUILTINS,
         CONF_SLOT_EXTRACTION,
         CONF_THRESHOLD,
-        DEFAULT_FALLBACK_AGENT,
         DEFAULT_EXPANSION_CAP,
+        DEFAULT_FALLBACK_AGENT,
         DEFAULT_INCLUDE_BUILTINS,
         DEFAULT_SLOT_EXTRACTION,
         DEFAULT_THRESHOLD,
@@ -47,14 +47,14 @@ try:
     )
 except ImportError:  # pragma: no cover
     from const import (  # type: ignore
-        CONF_FALLBACK_AGENT,
         CONF_DENYLIST,
         CONF_EXPANSION_CAP,
+        CONF_FALLBACK_AGENT,
         CONF_INCLUDE_BUILTINS,
         CONF_SLOT_EXTRACTION,
         CONF_THRESHOLD,
-        DEFAULT_FALLBACK_AGENT,
         DEFAULT_EXPANSION_CAP,
+        DEFAULT_FALLBACK_AGENT,
         DEFAULT_INCLUDE_BUILTINS,
         DEFAULT_SLOT_EXTRACTION,
         DEFAULT_THRESHOLD,
@@ -564,9 +564,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 agent_id=_HASSIL_AGENT_ID,
             )
         except Exception:
-            _LOGGER.exception(
-                "closest_intent: hassil forwarding failed for %r", forwarded_text
-            )
+            _LOGGER.exception("closest_intent: hassil forwarding failed for %r", forwarded_text)
 
         if hassil_result is not None and not _is_error_result(hassil_result):
             return hassil_result
@@ -584,9 +582,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 agent_id=self._fallback_agent_id,
             )
         except Exception:
-            _LOGGER.exception(
-                "closest_intent: fallback agent %s failed", self._fallback_agent_id
-            )
+            _LOGGER.exception("closest_intent: fallback agent %s failed", self._fallback_agent_id)
             return hassil_result if hassil_result is not None else _no_match(user_input)
 
     def _best_canonical(
