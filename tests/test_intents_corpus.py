@@ -13,6 +13,7 @@ sys.path.insert(
 )
 
 import pytest  # noqa: E402
+from const import SLOT_WILDCARD  # type: ignore  # noqa: E402
 from matching import (  # type: ignore  # noqa: E402
     Candidate,
     Resolver,
@@ -509,6 +510,32 @@ def test_regression_setze_dosenmais_einkaufsliste_variants() -> None:
         assert captured == ["dosenmais"], f"{user!r}: bad capture {captured!r}"
 
 
+def test_regression_setze_milch_picks_setze_anchored_expansion() -> None:
+    """
+    Bug: 'Setze Milch auf die Einkaufsliste' matched ``{item} auf die
+    einkaufsliste`` capturing item='setze milch' instead of the
+    structurally correct ``setze {item} auf die einkaufsliste``
+    expansion (item='milch').
+    """
+    pool = _full_einkauf_todo_pool()
+    user = "setze milch auf die einkaufsliste"
+    result = _agent_match(user, pool)
+    assert result is not None
+    intent, captured = result
+    assert intent == "Einkauf_Add", f"matched wrong intent: {intent}"
+    assert captured == ["milch"], f"bad capture: {captured!r}"
+
+    # Also assert the chosen candidate is the setze-anchored one,
+    # not the bare slot-leading one.
+    match = find_best(user, pool, threshold=THRESHOLD)
+    assert match is not None
+    candidate, _ = match
+    leading = candidate.text.split(SLOT_WILDCARD)[0].strip()
+    assert "setze" in leading, (
+        f"expected leading anchor with 'setze', got pattern {candidate.text!r}"
+    )
+
+
 def test_regression_fuege_hinzu_does_not_match_einkaufsliste_only() -> None:
     """
     Bug: 'Füge Dosenmais zur Einkaufsliste hinzu' added 'hinzu' to
@@ -525,3 +552,158 @@ def test_regression_fuege_hinzu_does_not_match_einkaufsliste_only() -> None:
     intent, captured = result
     assert intent == "Einkauf_Add"
     assert captured == ["dosenmais"], f"bad capture: {captured!r}"
+
+
+def _pool_from_patterns(patterns: dict[str, list[str]]) -> list[Candidate]:
+    out: list[Candidate] = []
+    for intent_name, pats in patterns.items():
+        for idx, pat in enumerate(pats):
+            for text, slots in expand_pattern(pat, EXPANSION_CAP):
+                out.append(
+                    Candidate(
+                        intent=intent_name,
+                        pattern_idx=idx,
+                        text=text,
+                        slot_names=slots,
+                    )
+                )
+    return out
+
+
+_MUSIC_POOL = _pool_from_patterns(
+    {
+        # Slot-bearing playlist intent competes with non-slot music intents
+        # that share the "Spiele" / "Spiel die" prefix.
+        "MusikPlaylist": [
+            "(Spiele|Spiel|Starte) [die ]Playlist {playlist}",
+            "Playlist {playlist}",
+        ],
+        "MusikAn": [
+            # fixme: looks like we are not expanding [a|b]...?
+            "(Spiele|Spiel|Starte) (Musik|die Musik)",
+            "Musik (an|abspielen|starten)",
+        ],
+        "ZufaelligesAlbum": [
+            "(Spiele|Spiel) [ein ]zufälliges Album",
+            "Zufälliges Album",
+        ],
+        "NeueMusik": [
+            "(Spiele|Spiel) [die ]neue[sten|n] (Musik|Tracks|Titel|Lieder)",
+            "(Spiele|Spiel) [die ]Playlist (neue Musik|Neue Tracks|Recently Added)",
+        ],
+    }
+)
+
+
+def test_regression_musikplaylist_picks_anchored_over_bare_slot() -> None:
+    """
+    Bug: 'Spiele die Playlist Sea Shanties' could match the bare
+    ``Playlist {playlist}`` pattern, absorbing 'Spiele die' into the
+    leading boundary slot.
+    """
+    user = "spiele die playlist sea shanties"
+    result = _agent_match(user, _MUSIC_POOL)
+    assert result is not None
+    intent, captured = result
+    assert intent == "MusikPlaylist"
+    assert captured == ["sea shanties"], f"bad capture: {captured!r}"
+
+
+def test_regression_musikplaylist_multiword_slot() -> None:
+    """
+    Multi-word playlist names ('Bridgerton Pop') must end up in the
+    slot, not in fixed text. The longer-anchored expansion is also the
+    only one whose canonical reconstructs to a sentence the official
+    parser will accept.
+    """
+    user = "spiel die playlist bridgerton pop"
+    result = _agent_match(user, _MUSIC_POOL)
+    assert result is not None
+    intent, captured = result
+    assert intent == "MusikPlaylist"
+    assert captured == ["bridgerton pop"], f"bad capture: {captured!r}"
+
+
+def test_regression_musik_an_does_not_get_swallowed_by_playlist_slot() -> None:
+    """'Spiele Musik' should pick MusikAn, not MusikPlaylist with playlist=['musik']."""
+    user = "spiele musik"
+    result = _agent_match(user, _MUSIC_POOL)
+    assert result is not None
+    intent, _ = result
+    assert intent == "MusikAn", f"matched wrong intent: {intent}"
+
+
+_TODO_POOL = _pool_from_patterns(
+    {
+        "ToDo_Add": [
+            "(setze|pack|tu|schreib) {item} auf (die|meine) (ToDo|To-Do|To Do)-Liste",
+            "{item} auf die ToDo-Liste",
+            "ToDo-Liste {item}",
+        ],
+    }
+)
+
+
+def test_regression_todo_multiword_item_with_setze_anchor() -> None:
+    """must capture the full multi-word item, not split it across the slot and a fixed suffix"""
+    user = "schreib zahnarzt termin auf meine to-do-liste"
+    result = _agent_match(user, _TODO_POOL)
+    assert result is not None
+    intent, captured = result
+    assert intent == "ToDo_Add"
+    assert captured == ["zahnarzt termin"], f"bad capture: {captured!r}"
+
+
+_EINKAUF_MULTIWORD_POOL = _full_einkauf_todo_pool()
+
+
+def test_regression_einkauf_multiword_item_with_setze_anchor() -> None:
+    """must capture the full multi-word item, not split it across the slot and a fixed suffix"""
+    user = "pack frische tomaten auf meine einkaufsliste"
+    result = _agent_match(user, _EINKAUF_MULTIWORD_POOL)
+    assert result is not None
+    intent, captured = result
+    assert intent == "Einkauf_Add"
+    assert captured == ["frische tomaten"], f"bad capture: {captured!r}"
+
+
+_WETTER_POOL = _pool_from_patterns(
+    {
+        # Slot-bearing weather hour intent competes with the bare
+        # WetterHeute/WetterMorgen no-slot patterns that share the
+        # 'Wie wird das Wetter' prefix.
+        "WetterStunde": [
+            "Wie [wird|ist] das Wetter um {timer_hours:hours} Uhr",
+            "Wie warm wird es um {timer_hours:hours} Uhr",
+        ],
+        "WetterHeute": [
+            "Wie ist das Wetter (heute|jetzt|gerade|draußen|aktuell)",
+            "Wie warm ist es (draußen|gerade|jetzt)",
+        ],
+        "WetterMorgen": [
+            "Wie wird das Wetter morgen [früh|nachmittag|abend]",
+            "Wie warm wird es morgen",
+        ],
+    }
+)
+
+
+def test_regression_wetter_stunde_keeps_hour_in_slot() -> None:
+    """'Wie wird das Wetter um 14 Uhr' must match WetterStunde with capture ['14']."""
+    user = "wie wird das wetter um 14 uhr"
+    result = _agent_match(user, _WETTER_POOL)
+    assert result is not None
+    intent, captured = result
+    assert intent == "WetterStunde"
+    assert captured == ["14"], f"bad capture: {captured!r}"
+
+
+def test_regression_wetter_morgen_does_not_steal_stunde_pattern() -> None:
+    """
+    'Wie wird das Wetter morgen' must match WetterMorgen, not WetterStunde with capture ['morgen']
+    """
+    user = "wie wird das wetter morgen"
+    result = _agent_match(user, _WETTER_POOL)
+    assert result is not None
+    intent, _ = result
+    assert intent == "WetterMorgen", f"matched wrong intent: {intent}"

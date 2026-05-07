@@ -297,18 +297,49 @@ def score(user_text: str, candidate_text: str) -> int:
     return int(fuzz.token_sort_ratio(user_norm, cand_stripped))
 
 
+_FIND_BEST_TIEBREAK_BAND = 15
+
+
+def _fixed_text_length(candidate_text: str) -> int:
+    """Length of the candidate's non-slot text, whitespace-collapsed."""
+    stripped = candidate_text.replace(SLOT_WILDCARD, " ")
+    return len(re.sub(r"\s+", " ", stripped).strip())
+
+
 def find_best(
     user_text: str, candidates: Iterable[Candidate], threshold: int
 ) -> tuple[Candidate, int] | None:
-    """Find the highest-scoring candidate above ``threshold``."""
-    best: tuple[Candidate, int] | None = None
+    """
+    Find the best candidate above ``threshold``.
+
+    First, find highest-scoring candidate.
+    Then, among the top performing ones, find the one with the shortest slot-text.
+    Tie-break rejects siblings whose slot at a leading/trailing
+    boundary absorbs material a more-anchored sibling would treat as
+    a fixed prefix/suffix, e.g. ``put {item} on the shopping list`` over the bare
+    ``{item} on the shopping list`` when the user actually said 'put'.
+    ``partial_ratio`` would happily scores the bare one at 100
+    because its fixed tail is a substring.
+    """
+    scored: list[tuple[Candidate, int]] = []
     for c in candidates:
         s = score(user_text, c.text)
         if s < threshold:
             continue
-        if best is None or s > best[1]:
-            best = (c, s)
-    return best
+        scored.append((c, s))
+    if not scored:
+        return None
+
+    scored.sort(key=lambda cs: -cs[1])
+    top_score = scored[0][1]
+    band_floor = top_score - _FIND_BEST_TIEBREAK_BAND
+    contenders = [cs for cs in scored if cs[1] >= band_floor]
+    if len(contenders) == 1:
+        return contenders[0]
+
+    if all(SLOT_WILDCARD in c.text for (c, _) in contenders):
+        contenders.sort(key=lambda cs: (-_fixed_text_length(cs[0].text), -cs[1]))
+    return contenders[0]
 
 
 _FIXED_PART_ALIGNMENT_THRESHOLD = 60
