@@ -5,6 +5,7 @@
   "config_flow": true,
   "dependencies": ["conversation"],
   "documentation": "https://github.com/charludo/hass-closest-intent",
+  "integration_type": "service",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/charludo/hass-closest-intent/issues",
   "requirements": ["rapidfuzz>=3.5.0"],

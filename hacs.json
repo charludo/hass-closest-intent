@@ -1,6 +1,5 @@
 {
   "name": "Closest Intent",
-  "integration_type": "service",
   "render_readme": true,
   "homeassistant": "2026.4.3",
   "zip_release": true,
