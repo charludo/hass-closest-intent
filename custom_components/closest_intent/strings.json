@@ -38,6 +38,28 @@
     "dump_candidates": {
       "name": "Dump candidates",
       "description": "Log the current candidate pool, expansion rules, and slot lists for every loaded Closest Intent agent."
+    },
+    "parse_sentence": {
+      "name": "Parse sentence",
+      "description": "Run a sentence through the Closest Intent matcher and return what it would match.",
+      "fields": {
+        "sentence": {
+          "name": "Sentence",
+          "description": "Sentence to try to parse."
+        },
+        "language": {
+          "name": "Language",
+          "description": "If none selected, use HomeAssistant's configured default language."
+        },
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "If none selected, use first configured one."
+        },
+        "run_official": {
+          "name": "Also run Home Assistant's parser",
+          "description": "Whether to pass the parsed/canonicalized sentence to HomeAssistant's own parser. Does not execute the intent/action."
+        }
+      }
     }
   }
 }

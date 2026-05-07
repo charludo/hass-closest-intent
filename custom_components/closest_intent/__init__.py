@@ -32,6 +32,7 @@ from .const import (
     KEY_CONVERSATION_INTENTS,
     KEY_CONVERSATION_LISTS,
     SERVICE_DUMP_CANDIDATES,
+    SERVICE_PARSE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -188,4 +189,53 @@ def _async_register_services(hass: HomeAssistant) -> None:
         SERVICE_DUMP_CANDIDATES,
         _dump,
         supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    parse_schema = vol.Schema(
+        {
+            vol.Required("sentence"): cv.string,
+            vol.Optional("language"): cv.string,
+            vol.Optional("entry_id"): cv.string,
+            vol.Optional("run_official", default=False): cv.boolean,
+        }
+    )
+
+    async def _parse(call: ServiceCall) -> ServiceResponse:
+        data = parse_schema(dict(call.data))
+        agents = hass.data.get(DOMAIN, {}).get(KEY_AGENT_INSTANCES, {})
+        if not agents:
+            return {"error": "no agent instances registered yet"}
+
+        entry_id = data.get("entry_id")
+        if entry_id is not None:
+            agent = agents.get(entry_id)
+            if agent is None:
+                return {
+                    "error": f"unknown entry_id {entry_id!r}",
+                    "available_entry_ids": sorted(agents.keys()),
+                }
+        else:
+            entry_id, agent = next(iter(agents.items()))
+
+        language = data.get("language") or hass.config.language or "en"
+        result = await agent.parse_sentence(
+            language, data["sentence"], run_official=data["run_official"]
+        )
+        result["entry_id"] = entry_id
+        _LOGGER.info(
+            "closest_intent.parse[%s][%s] %r -> matched=%s intent=%s canonical=%r",
+            entry_id,
+            language,
+            data["sentence"],
+            result.get("matched"),
+            result.get("intent"),
+            result.get("canonical"),
+        )
+        return result
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_PARSE,
+        _parse,
+        supports_response=SupportsResponse.ONLY,
     )

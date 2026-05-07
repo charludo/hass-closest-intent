@@ -637,6 +637,147 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 return (c, captured, s)
         return None
 
+    def _match_with_details(
+        self,
+        text: str,
+        resolver: Resolver,
+        candidates: list[Candidate],
+    ) -> tuple[Candidate, list[str], int, str] | None:
+        """Match ``text`` and return (candidate, captured, score, canonical) or None."""
+        match = find_best(text, candidates, self._threshold)
+        if match is None:
+            return None
+        candidate, score_value = match
+        if candidate.has_slots:
+            if not self._slot_extraction:
+                return None
+            captured = extract_slots(text, candidate)
+            if captured is None:
+                fallback = self._best_extractable_sibling(text, candidate.intent, candidates)
+                if fallback is None:
+                    return None
+                candidate, captured, score_value = fallback
+        else:
+            captured = []
+        canonical = build_canonical(candidate, captured, resolver=resolver)
+        return (candidate, captured, score_value, canonical)
+
+    async def parse_sentence(
+        self, language: str, sentence: str, run_official: bool = False
+    ) -> dict:
+        """Diagnostic: run the closest-intent matcher (and hassil) on ``sentence``."""
+        try:
+            resolver, user_candidates, builtin_candidates = await self._async_get_pool(language)
+        except Exception:
+            _LOGGER.exception("closest_intent.parse: pool build failed for %s", language)
+            return {
+                "language": language,
+                "input": sentence,
+                "error": f"failed to build pool for language {language!r}",
+            }
+
+        detail = self._match_with_details(sentence, resolver, user_candidates)
+        pool_used = "user"
+        if detail is None and builtin_candidates:
+            detail = self._match_with_details(sentence, resolver, builtin_candidates)
+            pool_used = "builtin"
+
+        if detail is None:
+            result: dict = {
+                "language": language,
+                "input": sentence,
+                "matched": False,
+                "canonical": None,
+            }
+        else:
+            candidate, captured, score_value, canonical = detail
+            slot_map: dict[str, str] = (
+                dict(zip(candidate.slot_names, captured, strict=False))
+                if candidate.slot_names
+                else {}
+            )
+            result = {
+                "language": language,
+                "input": sentence,
+                "matched": True,
+                "intent": candidate.intent,
+                "score": score_value,
+                "matched_pattern": candidate.text,
+                "captured_slots": slot_map,
+                "canonical": canonical,
+                "pool": pool_used,
+            }
+
+        if run_official:
+            text_for_recognize = result["canonical"] or sentence
+            try:
+                official = await self._official_recognize(language, text_for_recognize)
+            except Exception as exc:
+                _LOGGER.exception("closest_intent.parse: official recognize blew up")
+                official = {
+                    "available": False,
+                    "reason": f"could not connect to hassil ({type(exc).__name__}: {exc})",
+                }
+            result["official"] = official
+        return result
+
+    async def _official_recognize(self, language: str, text: str) -> dict:
+        """Route ``text`` through HA's default conversation agent in parse-only mode."""
+        try:
+            from homeassistant.components.conversation import (  # type: ignore
+                ConversationInput,
+                async_get_agent,
+            )
+            from homeassistant.core import Context  # type: ignore
+        except ImportError:
+            return {"available": False, "reason": "conversation API import failed"}
+
+        agent = async_get_agent(self.hass, None)
+        if agent is None:
+            return {"available": False, "reason": "default conversation agent not available"}
+
+        debug = getattr(agent, "async_debug_recognize", None)
+        if debug is None:
+            return {
+                "available": False,
+                "reason": "default agent has no async_debug_recognize "
+                "(Home Assistant version may be too old)",
+            }
+
+        try:
+            user_input = ConversationInput(
+                text=text,
+                context=Context(),
+                conversation_id=None,
+                device_id=None,
+                satellite_id=None,
+                language=language,
+                agent_id="conversation.home_assistant",
+            )
+        except TypeError:
+            try:
+                user_input = ConversationInput(  # type: ignore[call-arg]
+                    text=text,
+                    context=Context(),
+                    conversation_id=None,
+                    device_id=None,
+                    language=language,
+                    agent_id="conversation.home_assistant",
+                )
+            except Exception as exc:
+                return {"available": False, "reason": f"ConversationInput build failed: {exc}"}
+
+        try:
+            outcome = await debug(user_input)
+        except Exception as exc:
+            _LOGGER.exception("closest_intent.parse: default agent debug recognize raised")
+            return {"available": True, "input": text, "matched": False, "error": str(exc)}
+
+        if outcome is None:
+            return {"available": True, "input": text, "matched": False}
+
+        return {"available": True, "input": text, **outcome}
+
     def dump_state(self) -> dict:
         """Return a plain-data snapshot of pools for the diagnostic service."""
         out: dict = {

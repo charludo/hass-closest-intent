@@ -25,8 +25,8 @@ KEY_CONVERSATION_LISTS = "_conversation_lists"
 KEY_CONVERSATION_EXPANSION_RULES = "_conversation_expansion_rules"
 KEY_AGENT_INSTANCES = "_agent_instances"
 
-# Diagnostic service name.
 SERVICE_DUMP_CANDIDATES = "dump_candidates"
+SERVICE_PARSE = "parse_sentence"
 
 # Hard ceiling on candidates kept per intent after pattern expansion.
 PER_INTENT_CANDIDATE_CAP = 32
