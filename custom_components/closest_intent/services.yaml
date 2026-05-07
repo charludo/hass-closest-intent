@@ -28,6 +28,13 @@ parse_sentence:
       selector:
         config_entry:
           integration: closest_intent
+    include_builtins:
+      name: Include built-in intents
+      description: >-
+        Also match against HomeAssistant's built-in intents (HassTurnOn,...).
+      default: false
+      selector:
+        boolean:
     run_official:
       name: Pass on to Hassil
       description: >-

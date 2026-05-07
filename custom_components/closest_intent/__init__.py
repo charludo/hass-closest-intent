@@ -205,6 +205,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
             vol.Required("sentence"): cv.string,
             vol.Optional("language"): cv.string,
             vol.Optional("entry_id"): cv.string,
+            vol.Optional("include_builtins", default=False): cv.boolean,
             vol.Optional("run_official", default=False): cv.boolean,
         }
     )
@@ -228,7 +229,10 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
         language = data.get("language") or hass.config.language or "en"
         result = await agent.parse_sentence(
-            language, data["sentence"], run_official=data["run_official"]
+            language,
+            data["sentence"],
+            run_official=data["run_official"],
+            include_builtins=data["include_builtins"],
         )
         result["entry_id"] = entry_id
         _LOGGER.info(

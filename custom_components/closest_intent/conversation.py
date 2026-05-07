@@ -168,6 +168,8 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         # the user pool produces no match.
         self._pools: dict[str, tuple[Resolver, list[Candidate], list[Candidate]]] = {}
         self._pool_locks: dict[str, asyncio.Lock] = {}
+        self._builtin_overrides: dict[str, list[Candidate]] = {}
+        self._builtin_override_locks: dict[str, asyncio.Lock] = {}
         self._rebuild_handle = None  # async_call_later cancel handle
         self._unsub_listeners: list = []
 
@@ -220,6 +222,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         self._fallback_agent_id = fallback_agent_id
         # Anything affecting candidate composition invalidates the pools.
         self._pools.clear()
+        self._builtin_overrides.clear()
 
     @callback
     def _on_registry_event(self, _event) -> None:
@@ -233,11 +236,36 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         self._rebuild_handle = None
         languages = list(self._pools.keys())
         self._pools.clear()
+        self._builtin_overrides.clear()
         for lang in languages:
             try:
                 await self._async_get_pool(lang)
             except Exception:  # pragma: no cover
                 _LOGGER.exception("closest_intent: rebuild for %s failed", lang)
+
+    async def _async_get_builtin_override(
+        self, language: str, resolver: Resolver, user_intent_names: set[str]
+    ) -> list[Candidate]:
+        """Lazily build (and cache) builtin candidates for parse-time override."""
+        cached = self._builtin_overrides.get(language)
+        if cached is not None:
+            return cached
+        lock = self._builtin_override_locks.setdefault(language, asyncio.Lock())
+        async with lock:
+            cached = self._builtin_overrides.get(language)
+            if cached is not None:
+                return cached
+            builtins = await self.hass.async_add_executor_job(
+                self._build_builtin_candidates, language, resolver, user_intent_names
+            )
+            self._builtin_overrides[language] = builtins
+            return builtins
+
+    def _build_builtin_candidates(
+        self, language: str, resolver: Resolver, exclude: set[str]
+    ) -> list[Candidate]:
+        builtin_intents = self._gather_builtin_intents(language, exclude=exclude)
+        return self._expand_intents(builtin_intents, resolver)
 
     async def _async_get_pool(
         self, language: str
@@ -676,9 +704,18 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         return None
 
     async def parse_sentence(
-        self, language: str, sentence: str, run_official: bool = False
+        self,
+        language: str,
+        sentence: str,
+        run_official: bool = False,
+        include_builtins: bool = False,
     ) -> dict:
-        """Diagnostic: run the closest-intent matcher (and hassil) on ``sentence``."""
+        """
+        Diagnostic: run the closest-intent matcher (and hassil) on ``sentence``.
+
+        ``include_builtins=True`` forces builtin intents into the candidate
+        pool for this call even if the integration is configured without them.
+        """
         try:
             resolver, user_candidates, builtin_candidates = await self._async_get_pool(language)
         except Exception:
@@ -689,6 +726,16 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 "input": sentence,
                 "error": f"failed to build pool for language {language!r}",
             }
+
+        if include_builtins and not builtin_candidates:
+            try:
+                builtin_candidates = await self._async_get_builtin_override(
+                    language, resolver, {c.intent for c in user_candidates}
+                )
+            except Exception:
+                _LOGGER.exception(
+                    "closest_intent.parse: builtin override build failed for %s", language
+                )
 
         detail, pool_used = self._match_in_pools(
             sentence, resolver, user_candidates, builtin_candidates
