@@ -35,6 +35,7 @@ try:
         KEY_CONVERSATION_INTENTS,
         KEY_CONVERSATION_LISTS,
         PER_INTENT_CANDIDATE_CAP,
+        VERSION,
     )
     from .matching import (
         Candidate,
@@ -64,6 +65,7 @@ except ImportError:  # pragma: no cover
         KEY_CONVERSATION_INTENTS,
         KEY_CONVERSATION_LISTS,
         PER_INTENT_CANDIDATE_CAP,
+        VERSION,
     )
     from matching import (  # type: ignore
         Candidate,
@@ -682,6 +684,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         except Exception:
             _LOGGER.exception("closest_intent.parse: pool build failed for %s", language)
             return {
+                "version": VERSION,
                 "language": language,
                 "input": sentence,
                 "error": f"failed to build pool for language {language!r}",
@@ -693,6 +696,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
 
         if detail is None:
             result: dict = {
+                "version": VERSION,
                 "language": language,
                 "input": sentence,
                 "matched": False,
@@ -706,6 +710,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 else {}
             )
             result = {
+                "version": VERSION,
                 "language": language,
                 "input": sentence,
                 "matched": True,
@@ -790,6 +795,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
     def dump_state(self) -> dict:
         """Return a plain-data snapshot of pools for the diagnostic service."""
         out: dict = {
+            "version": VERSION,
             "entry_id": self._entry_id,
             "threshold": self._threshold,
             "expansion_cap": self._expansion_cap,

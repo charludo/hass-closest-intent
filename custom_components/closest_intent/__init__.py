@@ -33,6 +33,7 @@ from .const import (
     KEY_CONVERSATION_LISTS,
     SERVICE_DUMP_CANDIDATES,
     SERVICE_PARSE,
+    VERSION,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -111,7 +112,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 def _format_dump_summary(states: dict[str, dict]) -> str:
-    lines: list[str] = []
+    lines: list[str] = [f"closest_intent version {VERSION}", ""]
     for entry_id, state in states.items():
         lines.append(f"Agent {entry_id}")
         lines.append(
@@ -154,7 +155,11 @@ def _async_register_services(hass: HomeAssistant) -> None:
         agents = hass.data.get(DOMAIN, {}).get(KEY_AGENT_INSTANCES, {})
         if not agents:
             _LOGGER.warning("closest_intent.dump_candidates: no agent instances registered yet")
-            return {"agents": {}, "warning": "no agent instances registered yet"}
+            return {
+                "version": VERSION,
+                "agents": {},
+                "warning": "no agent instances registered yet",
+            }
 
         states: dict[str, dict] = {}
         for entry_id, agent in agents.items():
@@ -182,7 +187,11 @@ def _async_register_services(hass: HomeAssistant) -> None:
                 pretty,
             )
 
-        return {"summary": _format_dump_summary(states), "agents": states}
+        return {
+            "version": VERSION,
+            "summary": _format_dump_summary(states),
+            "agents": states,
+        }
 
     hass.services.async_register(
         DOMAIN,

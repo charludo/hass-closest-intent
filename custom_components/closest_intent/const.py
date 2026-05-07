@@ -2,7 +2,22 @@
 Constants for the closest-intent custom component.
 """
 
+import json
+import os
+
 DOMAIN = "closest_intent"
+
+
+def _read_version() -> str:
+    try:
+        manifest_path = os.path.join(os.path.dirname(__file__), "manifest.json")
+        with open(manifest_path, encoding="utf-8") as f:
+            return json.load(f).get("version", "unknown")
+    except Exception:
+        return "unknown"
+
+
+VERSION = _read_version()
 
 CONF_THRESHOLD = "threshold"
 CONF_EXPANSION_CAP = "expansion_cap"
