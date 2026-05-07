@@ -17,13 +17,13 @@ parse_sentence:
         text:
     language:
       name: Language
-      description: If none selected, use HomeAssistant's configured default language.
+      description: Defaults to Home Assistant's configured language.
       required: false
       selector:
         language:
     entry_id:
       name: Closest Intent agent
-      description: If none selected, use first configured one.
+      description: Defaults to the first loaded agent.
       required: false
       selector:
         config_entry:
@@ -33,7 +33,6 @@ parse_sentence:
       description: >-
         Whether to pass the parsed/canonicalized sentence to HomeAssistant's own parser.
         Does not execute the intent/action.
-      required: false
       default: false
       selector:
         boolean:
