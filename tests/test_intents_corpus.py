@@ -579,8 +579,7 @@ _MUSIC_POOL = _pool_from_patterns(
             "Playlist {playlist}",
         ],
         "MusikAn": [
-            # fixme: looks like we are not expanding [a|b]...?
-            "(Spiele|Spiel|Starte) (Musik|die Musik)",
+            "(Spiele|Spiel|Starte) [Musik|die Musik]",
             "Musik (an|abspielen|starten)",
         ],
         "ZufaelligesAlbum": [

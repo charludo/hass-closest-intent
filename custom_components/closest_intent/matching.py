@@ -143,7 +143,7 @@ def expand_pattern(
 
     if cap == 0:
         text = _ALT_RE.sub(lambda m: m.group(1).split("|")[0], pat)
-        text = _OPT_RE.sub(lambda m: m.group(1), text)
+        text = _OPT_RE.sub(lambda m: m.group(1).split("|")[0], text)
         return [(_normalise(text), list(slot_lists))]
 
     variants: list[str] = [pat]
@@ -163,7 +163,12 @@ def expand_pattern(
                 continue
             changed = True
             before, after = v[: chosen.start()], v[chosen.end() :]
-            opts = chosen.group(1).split("|") if chosen is m_alt else ["", chosen.group(1)]
+            if chosen is m_alt:
+                opts = chosen.group(1).split("|")
+            else:
+                # ``[a|b]`` is semantically equivalent to ``(|a|b)``
+                inner = chosen.group(1)
+                opts = [""] + inner.split("|") if "|" in inner else ["", inner]
             for o in opts:
                 new_variants.append(before + o + after)
             if len(new_variants) >= cap:

@@ -40,6 +40,21 @@ def test_expand_optional() -> None:
     assert "pumpe an" in texts
 
 
+def test_expand_optional_with_alternation_inside() -> None:
+    """``[a|b]`` is semantically equivalent to ``(|a|b)``"""
+    texts = {t for (t, _) in expand_pattern("Spiele [Musik|die Musik]", cap=16)}
+    assert "spiele" in texts
+    assert "spiele musik" in texts
+    assert "spiele die musik" in texts
+
+
+def test_expand_optional_with_alternation_cap_zero() -> None:
+    """With expansion disabled, ``[a|b]`` collapses to its first branch."""
+    out = expand_pattern("Spiele [Musik|die Musik]", cap=0)
+    assert len(out) == 1
+    assert out[0][0] == "spiele musik"
+
+
 def test_expand_combined() -> None:
     texts = {t for (t, _) in expand_pattern("(Schalte|Mache) [die ]Pumpe an", cap=16)}
     assert "schalte pumpe an" in texts
