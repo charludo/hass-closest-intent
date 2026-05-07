@@ -11,7 +11,7 @@ import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
@@ -109,6 +109,36 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 
+def _format_dump_summary(states: dict[str, dict]) -> str:
+    lines: list[str] = []
+    for entry_id, state in states.items():
+        lines.append(f"Agent {entry_id}")
+        lines.append(
+            f"  threshold={state['threshold']} "
+            f"expansion_cap={state['expansion_cap']} "
+            f"include_builtins={state['include_builtins']} "
+            f"slot_extraction={state['slot_extraction']}"
+        )
+        if state.get("base_agent_id"):
+            lines.append(f"  base_agent={state['base_agent_id']}")
+        if state.get("denylist"):
+            lines.append(f"  denylist={', '.join(state['denylist'])}")
+        for lang, ls in state["languages"].items():
+            lines.append(
+                f"  [{lang}] {ls['user_candidate_count']} user / "
+                f"{ls['builtin_candidate_count']} builtin candidates"
+            )
+            for label, key in (("user", "user_intents"), ("builtin", "builtin_intents")):
+                intents = ls.get(key) or {}
+                if not intents:
+                    continue
+                lines.append(f"    {label} intents:")
+                for intent, texts in sorted(intents.items()):
+                    lines.append(f"      - {intent} ({len(texts)})")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
 def _async_register_services(hass: HomeAssistant) -> None:
     """
     Register the developer-facing dump_candidates service.
@@ -119,14 +149,16 @@ def _async_register_services(hass: HomeAssistant) -> None:
     if hass.services.has_service(DOMAIN, SERVICE_DUMP_CANDIDATES):
         return
 
-    async def _dump(call: ServiceCall) -> None:
+    async def _dump(call: ServiceCall) -> ServiceResponse:
         agents = hass.data.get(DOMAIN, {}).get(KEY_AGENT_INSTANCES, {})
         if not agents:
             _LOGGER.warning("closest_intent.dump_candidates: no agent instances registered yet")
-            return
+            return {"agents": {}, "warning": "no agent instances registered yet"}
 
+        states: dict[str, dict] = {}
         for entry_id, agent in agents.items():
             state = agent.dump_state()
+            states[entry_id] = state
             # Pretty-print at DEBUG so users can paste a single block when
             # filing issues. INFO line is a one-liner pointer.
             _LOGGER.info(
@@ -149,4 +181,11 @@ def _async_register_services(hass: HomeAssistant) -> None:
                 pretty,
             )
 
-    hass.services.async_register(DOMAIN, SERVICE_DUMP_CANDIDATES, _dump)
+        return {"summary": _format_dump_summary(states), "agents": states}
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_DUMP_CANDIDATES,
+        _dump,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
