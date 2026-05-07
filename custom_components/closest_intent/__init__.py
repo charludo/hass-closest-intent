@@ -1,5 +1,5 @@
 """
-Closest-intent fuzzy-fallback conversation agent for Home Assistant.
+Fuzzy intent matcher for HomeAssistant. Garbled STT output in, actual intent out.
 """
 
 from __future__ import annotations

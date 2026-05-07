@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "closest_intent"
 version = "0.1.0"
-description = "Fuzzy-matching conversation agent for Home Assistant.'"
+description = "Fuzzy intent matcher for HomeAssistant. Garbled STT output in, actual intent out."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"

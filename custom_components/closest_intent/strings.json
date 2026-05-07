@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Closest Intent",
-        "description": "Fuzzy-match STT output against your conversation intents and forward the canonical sentence to hassil. A fallback conversation agent can be configured for when hassil can't handle the result.",
+        "description": "Fuzzy intent matcher for Home Assistant: garbled STT output in, actual intent out. The canonical sentence is forwarded to Hassil.",
         "data": {
           "threshold": "Match threshold (higher = stricter)",
           "expansion_cap": "Pattern expansion cap (0 disables [...] / (a|b))",
