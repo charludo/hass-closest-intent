@@ -153,7 +153,6 @@ def expand_pattern(
         for v in variants:
             m_alt = _ALT_RE.search(v)
             m_opt = _OPT_RE.search(v)
-            chosen = None
             if m_alt and m_opt:
                 chosen = m_alt if m_alt.start() < m_opt.start() else m_opt
             else:
@@ -163,12 +162,11 @@ def expand_pattern(
                 continue
             changed = True
             before, after = v[: chosen.start()], v[chosen.end() :]
-            if chosen is m_alt:
-                opts = chosen.group(1).split("|")
-            else:
-                # ``[a|b]`` is semantically equivalent to ``(|a|b)``
-                inner = chosen.group(1)
-                opts = [""] + inner.split("|") if "|" in inner else ["", inner]
+
+            # ``[a|b]`` is semantically equivalent to ``(|a|b)``
+            opts = chosen.group(1).split("|")
+            if chosen is m_opt:
+                opts = ["", *opts]
             for o in opts:
                 new_variants.append(before + o + after)
             if len(new_variants) >= cap:

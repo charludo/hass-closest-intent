@@ -315,7 +315,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         try:
             import yaml  # type: ignore
         except ImportError:
-            _LOGGER.warn("PyYAML not importable; skipping custom_sentences")
+            _LOGGER.warning("PyYAML not importable; skipping custom_sentences")
             return []
 
         base = self.hass.config.path("custom_sentences", language)
@@ -540,18 +540,32 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             _LOGGER.exception("closest_intent: failed to build pool for language %s", language)
             resolver, user_candidates, builtin_candidates = Resolver(), [], []
 
+        forwarded_text = user_input.text
         try:
-            canonical = self._best_canonical(user_input, resolver, user_candidates)
-            if canonical is None and builtin_candidates:
-                # User pool produced nothing usable; fall back to builtins so
-                # vanilla "turn on the light" still resolves when no custom
-                # intent covers it.
-                canonical = self._best_canonical(user_input, resolver, builtin_candidates)
+            detail, _ = self._match_in_pools(
+                user_input.text, resolver, user_candidates, builtin_candidates
+            )
         except Exception:  # pragma: no cover
             _LOGGER.exception("closest_intent: unexpected error matching %r", user_input.text)
-            canonical = None
+            detail = None
 
-        forwarded_text = canonical if canonical is not None else user_input.text
+        if detail is None:
+            _LOGGER.debug(
+                "closest_intent: no match for %r above %d, passthrough",
+                user_input.text,
+                self._threshold,
+            )
+        else:
+            candidate, captured, score_value, canonical = detail
+            forwarded_text = canonical
+            _LOGGER.info(
+                "closest_intent: %r -> %s (score=%d, captured=%s) -> forwarding %r to hassil",
+                user_input.text,
+                candidate.intent,
+                score_value,
+                captured,
+                canonical,
+            )
 
         hassil_result = None
         try:
@@ -585,71 +599,72 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             _LOGGER.exception("closest_intent: fallback agent %s failed", self._fallback_agent_id)
             return hassil_result if hassil_result is not None else _no_match(user_input)
 
-    def _best_canonical(
+    def _match(
         self,
-        user_input: conversation.ConversationInput,
+        text: str,
         resolver: Resolver,
         candidates: list[Candidate],
-    ) -> str | None:
-        match = find_best(user_input.text, candidates, self._threshold)
-        if match is None:
-            _LOGGER.debug(
-                "closest_intent: no match for %r above %d, passthrough",
-                user_input.text,
-                self._threshold,
-            )
-            return None
+    ) -> tuple[Candidate, list[str], int, str] | None:
+        """Match ``text`` against ``candidates`` and resolve slots.
 
+        Returns ``(candidate, captured, score, canonical)`` or ``None``. When
+        the top-scoring candidate is slot-bearing but its slots fail to
+        extract, falls back to the highest-scoring same-intent sibling whose
+        slots do extract. With ``slot_extraction=False`` slot-bearing matches
+        are skipped (passthrough).
+        """
+        match = find_best(text, candidates, self._threshold)
+        if match is None:
+            return None
         candidate, score_value = match
 
         if candidate.has_slots:
             if not self._slot_extraction:
                 return None
-            captured = extract_slots(user_input.text, candidate)
+            captured = extract_slots(text, candidate)
             if captured is None:
-                fallback = self._best_extractable_sibling(
-                    user_input.text, candidate.intent, candidates
-                )
-                if fallback is None:
-                    _LOGGER.debug(
-                        "closest_intent: matched %s (score=%d) but no expansion extracted, "
-                        "passthrough",
-                        candidate.intent,
-                        score_value,
-                    )
+                sibling = self._best_extractable_sibling(text, candidate, candidates)
+                if sibling is None:
                     return None
-                candidate, captured, score_value = fallback
+                candidate, captured, score_value = sibling
         else:
             captured = []
 
         canonical = build_canonical(candidate, captured, resolver=resolver)
-        _LOGGER.info(
-            "closest_intent: %r -> %s (score=%d, captured=%s) -> forwarding %r to %s",
-            user_input.text,
-            candidate.intent,
-            score_value,
-            captured,
-            canonical,
-            self._fallback_agent_id,
-        )
-        return canonical
+        return (candidate, captured, score_value, canonical)
+
+    def _match_in_pools(
+        self,
+        text: str,
+        resolver: Resolver,
+        user_candidates: list[Candidate],
+        builtin_candidates: list[Candidate],
+    ) -> tuple[tuple[Candidate, list[str], int, str] | None, str | None]:
+        """Try the user pool, fall back to builtins. Returns ``(detail, pool_used)``."""
+        detail = self._match(text, resolver, user_candidates)
+        if detail is not None:
+            return detail, "user"
+        if builtin_candidates:
+            detail = self._match(text, resolver, builtin_candidates)
+            if detail is not None:
+                return detail, "builtin"
+        return None, None
 
     def _best_extractable_sibling(
         self,
         user_text: str,
-        intent_name: str,
+        skip: Candidate,
         candidates: list[Candidate],
     ) -> tuple[Candidate, list[str], int] | None:
-        """
-        Among same-intent expansions, return the highest-scoring one
-        whose slots actually extract.
-        """
-        scored: list[tuple[int, Candidate]] = []
-        for c in candidates:
-            if c.intent != intent_name or not c.has_slots:
-                continue
-            scored.append((score(user_text, c.text), c))
-        scored.sort(key=lambda x: -x[0])
+        """Highest-scoring same-intent slot-bearing sibling whose slots extract."""
+        scored = sorted(
+            (
+                (score(user_text, c.text), c)
+                for c in candidates
+                if c is not skip and c.intent == skip.intent and c.has_slots
+            ),
+            key=lambda sc: -sc[0],
+        )
         for s, c in scored:
             if s < self._threshold:
                 break
@@ -657,31 +672,6 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             if captured is not None:
                 return (c, captured, s)
         return None
-
-    def _match_with_details(
-        self,
-        text: str,
-        resolver: Resolver,
-        candidates: list[Candidate],
-    ) -> tuple[Candidate, list[str], int, str] | None:
-        """Match ``text`` and return (candidate, captured, score, canonical) or None."""
-        match = find_best(text, candidates, self._threshold)
-        if match is None:
-            return None
-        candidate, score_value = match
-        if candidate.has_slots:
-            if not self._slot_extraction:
-                return None
-            captured = extract_slots(text, candidate)
-            if captured is None:
-                fallback = self._best_extractable_sibling(text, candidate.intent, candidates)
-                if fallback is None:
-                    return None
-                candidate, captured, score_value = fallback
-        else:
-            captured = []
-        canonical = build_canonical(candidate, captured, resolver=resolver)
-        return (candidate, captured, score_value, canonical)
 
     async def parse_sentence(
         self, language: str, sentence: str, run_official: bool = False
@@ -697,11 +687,9 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 "error": f"failed to build pool for language {language!r}",
             }
 
-        detail = self._match_with_details(sentence, resolver, user_candidates)
-        pool_used = "user"
-        if detail is None and builtin_candidates:
-            detail = self._match_with_details(sentence, resolver, builtin_candidates)
-            pool_used = "builtin"
+        detail, pool_used = self._match_in_pools(
+            sentence, resolver, user_candidates, builtin_candidates
+        )
 
         if detail is None:
             result: dict = {
