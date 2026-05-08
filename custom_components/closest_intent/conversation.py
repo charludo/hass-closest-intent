@@ -673,15 +673,16 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         user_candidates: list[Candidate],
         builtin_candidates: list[Candidate],
     ) -> tuple[tuple[Candidate, list[str], int, str] | None, str | None]:
-        """Try the user pool, fall back to builtins. Returns ``(detail, pool_used)``."""
-        detail = self._match(text, resolver, user_candidates)
-        if detail is not None:
-            return detail, "user"
-        if builtin_candidates:
-            detail = self._match(text, resolver, builtin_candidates)
-            if detail is not None:
-                return detail, "builtin"
-        return None, None
+        """Match against user + builtin pools as one. Records ``pool_used`` for diagnostics."""
+        combined = user_candidates + builtin_candidates
+        if not combined:
+            return None, None
+        detail = self._match(text, resolver, combined)
+        if detail is None:
+            return None, None
+        winner = detail[0]
+        in_user_pool = any(c is winner for c in user_candidates)
+        return detail, "user" if in_user_pool else "builtin"
 
     def _best_extractable_sibling(
         self,
