@@ -79,6 +79,7 @@ def _build_schema(
             vol.Required(
                 CONF_THRESHOLD,
                 default=defaults.get(CONF_THRESHOLD, DEFAULT_THRESHOLD),
+                description="Match threshold (higher = stricter)",
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     min=0, max=100, step=1, mode=selector.NumberSelectorMode.SLIDER
@@ -87,6 +88,7 @@ def _build_schema(
             vol.Required(
                 CONF_EXPANSION_CAP,
                 default=defaults.get(CONF_EXPANSION_CAP, DEFAULT_EXPANSION_CAP),
+                description="Pattern expansion cap (0 disables [...] / (a|b))",
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     min=0, max=512, step=1, mode=selector.NumberSelectorMode.BOX
@@ -95,18 +97,27 @@ def _build_schema(
             vol.Optional(
                 CONF_DENYLIST,
                 default=denylist_default,
+                description="Exclude these intent names from matching (empty = none excluded)",
             ): denylist_selector,
             vol.Required(
                 CONF_SLOT_EXTRACTION,
                 default=defaults.get(CONF_SLOT_EXTRACTION, DEFAULT_SLOT_EXTRACTION),
+                description="Extract slot values from user speech",
             ): selector.BooleanSelector(),
             vol.Required(
                 CONF_INCLUDE_BUILTINS,
                 default=defaults.get(CONF_INCLUDE_BUILTINS, DEFAULT_INCLUDE_BUILTINS),
+                description=(
+                    "Also fuzzy-match Home Assistant's built-in intents "
+                    "(HassTurnOn etc.). Not recommended"
+                ),
             ): selector.BooleanSelector(),
             vol.Required(
                 CONF_FALLBACK_AGENT,
                 default=fallback_agent_default,
+                description=(
+                    "Fallback conversation agent (used only when hassil errors or returns no match)"
+                ),
             ): selector.EntitySelector(selector.EntitySelectorConfig(domain="conversation")),
         }
     )
