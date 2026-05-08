@@ -29,7 +29,7 @@ try to figure out what the speaker *probably meant* to say from the garbled outp
 
 This project does the latter.
 
-With this custom integration, "Vacuum **live in room**" will actually turn on the lights in your **living room**.
+With this custom integration, "Lights on in **live in room**" will actually turn on the lights in your **living room**.
 So will, for that matter, "lighrts on inn livainriomm".
 
 Short demo, first with `closest-intent`, then with bare Hassil:
