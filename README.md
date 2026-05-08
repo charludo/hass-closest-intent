@@ -204,8 +204,8 @@ However, please feel free to try enabling the built-in intents first - it may ju
 1. Open HACS, click the three-dot menu (top right) -> **Custom repositories**.
 1. Paste `https://github.com/charludo/hass-closest-intent`, set **Type** to *Integration*, click **Add**.
 1. Find **Closest Intent** in the HACS list, click **Download**.
-1. Restart Home Assistant.
-1. Go to **Settings** -> **Devices & services** -> **Add integration** -> search **Closest Intent**.
+1. Restart HomeAssistant.
+1. Search for **Closest Intent** in the HACS search bar, then install.
 1. Follow the config flow.
 
 &#160;
