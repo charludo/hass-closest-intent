@@ -385,14 +385,28 @@ def _word_boundary_ends(sub: str, s: int, max_words: int = _MAX_BOUNDARY_LOOKAHE
     return out
 
 
+def _word_boundary_starts(sub: str, e: int, max_words: int = _MAX_BOUNDARY_LOOKAHEAD) -> list[int]:
+    """Start positions in ``sub[:e]`` on word boundaries."""
+    pos = e
+    out: list[int] = []
+    while pos > 0 and len(out) < max_words:
+        prev_space = sub.rfind(" ", 0, pos)
+        if prev_space == -1:
+            out.append(0)
+            break
+        out.append(prev_space + 1)
+        pos = prev_space
+    return out
+
+
 def _align_fixed_part(fixed: str, user: str, start: int) -> tuple[int, int] | None:
     """
     Find where ``fixed`` approximately occurs in ``user[start:]``.
 
     Two-stage alignment:
       1. ``partial_ratio_alignment`` finds a starting point with merged-token tolerance
-      2. We then enumerate word-boundary end positions in the input,
-         and pick the one with the highest ``fuzz.ratio`` against ``fixed``.
+      2. We then enumerate word-boundary start/end positions, picking the (start, end) pair
+         with the highest ``fuzz.ratio`` against ``fixed``.
 
     Slot captures end up on token boundaries unless the input is genuinely mid-word.
     """
@@ -404,14 +418,18 @@ def _align_fixed_part(fixed: str, user: str, start: int) -> tuple[int, int] | No
     alignment = fuzz.partial_ratio_alignment(fixed, sub)
     if alignment is None or alignment.score < _FIXED_PART_ALIGNMENT_THRESHOLD:
         return None
-    s = alignment.dest_start
+    best_start = alignment.dest_start
     best_end = alignment.dest_end
-    best_score = fuzz.ratio(fixed, sub[s:best_end])
-    for cand_end in _word_boundary_ends(sub, s):
-        score = fuzz.ratio(fixed, sub[s:cand_end])
+    best_score = fuzz.ratio(fixed, sub[best_start:best_end])
+    for cand_end in _word_boundary_ends(sub, best_start):
+        score = fuzz.ratio(fixed, sub[best_start:cand_end])
         if score > best_score:
             best_end, best_score = cand_end, score
-    return (start + s, start + best_end)
+    for cand_start in _word_boundary_starts(sub, alignment.dest_start):
+        score = fuzz.ratio(fixed, sub[cand_start:best_end])
+        if score > best_score:
+            best_start, best_score = cand_start, score
+    return (start + best_start, start + best_end)
 
 
 def extract_slots(user_text: str, candidate: Candidate) -> list[str] | None:

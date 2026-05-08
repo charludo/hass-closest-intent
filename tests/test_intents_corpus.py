@@ -540,6 +540,16 @@ def test_regression_setze_milch_picks_setze_anchored_expansion() -> None:
     )
 
 
+def test_regression_stt_split_in_trailing_fixed_part_does_not_leak_into_slot() -> None:
+    """Make sure start and end are both refined for word boundaries"""
+    user = "setz e milch a uf die iasnfksugliste"
+    result = _agent_match(user, _full_einkauf_todo_pool())
+    assert result is not None
+    intent, captured = result
+    assert intent == "Einkauf_Add", f"matched wrong intent: {intent}"
+    assert captured == ["milch"], f"bad capture: {captured!r}"
+
+
 def test_regression_stt_corrupted_setze_picks_long_anchored_intent() -> None:
     """
     Ensure that garbled optional prefixes aren't pulled into the slot value
