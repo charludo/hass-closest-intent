@@ -219,13 +219,6 @@ def test_extract_slots_recovers_from_stt_split_token() -> None:
     assert extract_slots("einkaufslis ste veganes hack", cand) == ["veganes hack"]
     assert extract_slots("einkaufsli ste salami", cand) == ["salami"]
     assert extract_slots("einkaufslüsste veganes hack", cand) == ["veganes hack"]
-    cand2 = Candidate(
-        intent="Einkauf_Add",
-        pattern_idx=0,
-        text=f"{SLOT_WILDCARD} auf die einkaufsliste",
-        slot_names=["item"],
-    )
-    assert extract_slots("salami auf die einkaufslis ste", cand2) == ["salami"]
 
 
 def test_extract_slots_word_boundary_alignment() -> None:
@@ -251,24 +244,6 @@ def test_extract_slots_word_boundary_alignment() -> None:
     )
     assert extract_slots("salami auf die einkaufsliste", cand2) == ["salami"]
     assert extract_slots("vollmilch auf die einkaufsliste", cand2) == ["vollmilch"]
-
-
-def test_extract_slots_strips_stt_noise_prefix() -> None:
-    cand = Candidate(
-        intent="Einkauf_Add",
-        pattern_idx=0,
-        text=f"{SLOT_WILDCARD} auf die einkaufsliste",
-        slot_names=["item"],
-    )
-    assert extract_slots("e milch auf die einkaufsliste", cand) == ["milch"]
-    assert extract_slots("ste hefe auf die einkaufsliste", cand) == ["hefe"]
-    assert extract_slots("r tortellini auf die einkaufsliste", cand) == ["tortellini"]
-    assert extract_slots("se butter auf die einkaufsliste", cand) == ["butter"]
-    assert extract_slots("milch e auf die einkaufsliste", cand) == ["milch"]
-    assert extract_slots("eier auf die einkaufsliste", cand) == ["eier"]
-    assert extract_slots("x mango auf die einkaufsliste", cand) == ["mango"]
-    assert extract_slots("z senf auf die einkaufsliste", cand) == ["senf"]
-    assert extract_slots("5 äpfel auf die einkaufsliste", cand) == ["5 äpfel"]
 
 
 def test_extract_slots_two_slots() -> None:

@@ -365,41 +365,6 @@ def find_best(
 
 _FIXED_PART_ALIGNMENT_THRESHOLD = 60
 
-_STT_NOISE_TOKENS = frozenset(
-    {
-        "s",
-        "t",
-        "e",
-        "r",
-        "se",
-        "te",
-        "ne",
-        "ge",
-        "be",
-        "ste",
-        "ehm",
-        "uhm",
-        "äh",
-        "ähm",
-        "uh",
-        "hmm",
-    }
-)
-
-
-def _is_noise_token(t: str) -> bool:
-    return (len(t) == 1 and t.isalpha()) or t.lower() in _STT_NOISE_TOKENS
-
-
-def _strip_stt_noise(s: str) -> str:
-    tokens = s.split()
-    while tokens and _is_noise_token(tokens[0]):
-        tokens.pop(0)
-    while tokens and _is_noise_token(tokens[-1]):
-        tokens.pop()
-    return " ".join(tokens)
-
-
 _MAX_BOUNDARY_LOOKAHEAD = 8
 
 
@@ -494,7 +459,7 @@ def extract_slots(user_text: str, candidate: Candidate) -> list[str] | None:
             slot_end = len(user)
 
         source = user_display if indices_aligned else user
-        captured.append(_strip_stt_noise(source[end_pos:slot_end].strip()))
+        captured.append(source[end_pos:slot_end].strip())
         cursor = slot_end
 
     return captured

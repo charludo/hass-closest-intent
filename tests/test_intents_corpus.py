@@ -540,6 +540,29 @@ def test_regression_setze_milch_picks_setze_anchored_expansion() -> None:
     )
 
 
+def test_regression_stt_corrupted_setze_picks_long_anchored_intent() -> None:
+    """
+    Ensure that garbled optional prefixes aren't pulled into the slot value
+    when a similar intent without the prefix exists.
+    """
+    pool = _full_einkauf_todo_pool()
+    cases = [
+        "setz milch auf die einkaufsliste",
+        "stze milch auf die einkaufsliste",
+        "set ze milch auf die einkaufsliste",
+        "setz e milch auf die einkaufsliste",
+        "setz e milch auf die einkaufslis ste",
+        "setze milch auf die einkaufslis ste",
+        "setze milch auf die einkaufslsite",
+    ]
+    for user in cases:
+        result = _agent_match(user, pool)
+        assert result is not None, f"no match for {user!r}"
+        intent, captured = result
+        assert intent == "Einkauf_Add", f"{user!r}: matched wrong intent {intent}"
+        assert captured == ["milch"], f"{user!r}: bad capture {captured!r}"
+
+
 def test_regression_fuege_hinzu_does_not_match_einkaufsliste_only() -> None:
     """
     Bug: 'Füge Dosenmais zur Einkaufsliste hinzu' added 'hinzu' to
