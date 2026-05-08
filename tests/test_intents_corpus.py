@@ -274,12 +274,13 @@ def _build_no_slot_candidates() -> list[Candidate]:
     out: list[Candidate] = []
     for intent_name, phrases in CORPUS.items():
         for idx, phrase in enumerate(phrases):
-            for text, slot_names in expand_pattern(phrase, EXPANSION_CAP):
+            for text, display_text, slot_names in expand_pattern(phrase, EXPANSION_CAP):
                 out.append(
                     Candidate(
                         intent=intent_name,
                         pattern_idx=idx,
                         text=text,
+                        display_text=display_text,
                         slot_names=slot_names,
                     )
                 )
@@ -343,9 +344,10 @@ def test_slot_corpus_extracts(
             intent=intent_name,
             pattern_idx=0,
             text=text,
+            display_text=display_text,
             slot_names=slots,
         )
-        for text, slots in expansions
+        for text, display_text, slots in expansions
     ]
     match = find_best(user_text, candidates, threshold=THRESHOLD)
     assert match is not None, f"no match for {user_text!r}"
@@ -386,9 +388,10 @@ def test_resolver_canonicalises_typo_d_area() -> None:
             intent="Test_Area",
             pattern_idx=0,
             text=text,
+            display_text=display_text,
             slot_names=slots,
         )
-        for text, slots in expand_pattern(pattern, EXPANSION_CAP)
+        for text, display_text, slots in expand_pattern(pattern, EXPANSION_CAP)
     ]
     resolver = Resolver(slot_values={"area": ["Wohnzimmer", "Büro", "Küche"]})
     user = "test zwei im wohnzma"
@@ -397,7 +400,7 @@ def test_resolver_canonicalises_typo_d_area() -> None:
     captured = extract_slots(user, match[0])
     assert captured is not None
     canonical = build_canonical(match[0], captured, resolver=resolver)
-    assert canonical == "test zwei im wohnzimmer"
+    assert canonical == "Test zwei im Wohnzimmer"
 
 
 # Below here: actual misfires I encountered.
@@ -421,12 +424,13 @@ def _full_einkauf_todo_pool() -> list[Candidate]:
     out: list[Candidate] = []
     for intent_name, pats in patterns.items():
         for idx, pat in enumerate(pats):
-            for text, slots in expand_pattern(pat, EXPANSION_CAP):
+            for text, display_text, slots in expand_pattern(pat, EXPANSION_CAP):
                 out.append(
                     Candidate(
                         intent=intent_name,
                         pattern_idx=idx,
                         text=text,
+                        display_text=display_text,
                         slot_names=slots,
                     )
                 )
@@ -558,12 +562,13 @@ def _pool_from_patterns(patterns: dict[str, list[str]]) -> list[Candidate]:
     out: list[Candidate] = []
     for intent_name, pats in patterns.items():
         for idx, pat in enumerate(pats):
-            for text, slots in expand_pattern(pat, EXPANSION_CAP):
+            for text, display_text, slots in expand_pattern(pat, EXPANSION_CAP):
                 out.append(
                     Candidate(
                         intent=intent_name,
                         pattern_idx=idx,
                         text=text,
+                        display_text=display_text,
                         slot_names=slots,
                     )
                 )

@@ -25,24 +25,24 @@ from matching import (  # type: ignore  # noqa: E402
 
 def test_expand_no_syntax() -> None:
     out = expand_pattern("Wie spät ist es", cap=16)
-    assert out == [("wie spät ist es", [])]
+    assert out == [("wie spät ist es", "Wie spät ist es", [])]
 
 
 def test_expand_alternatives() -> None:
-    texts = [t for (t, _) in expand_pattern("(Hallo|Guten Tag)", cap=16)]
+    texts = [t for (t, _, _) in expand_pattern("(Hallo|Guten Tag)", cap=16)]
     assert "hallo" in texts
     assert "guten tag" in texts
 
 
 def test_expand_optional() -> None:
-    texts = [t for (t, _) in expand_pattern("Pumpe [an]", cap=16)]
+    texts = [t for (t, _, _) in expand_pattern("Pumpe [an]", cap=16)]
     assert "pumpe" in texts
     assert "pumpe an" in texts
 
 
 def test_expand_optional_with_alternation_inside() -> None:
     """``[a|b]`` is semantically equivalent to ``(|a|b)``"""
-    texts = {t for (t, _) in expand_pattern("Spiele [Musik|die Musik]", cap=16)}
+    texts = {t for (t, _, _) in expand_pattern("Spiele [Musik|die Musik]", cap=16)}
     assert "spiele" in texts
     assert "spiele musik" in texts
     assert "spiele die musik" in texts
@@ -56,7 +56,7 @@ def test_expand_optional_with_alternation_cap_zero() -> None:
 
 
 def test_expand_combined() -> None:
-    texts = {t for (t, _) in expand_pattern("(Schalte|Mache) [die ]Pumpe an", cap=16)}
+    texts = {t for (t, _, _) in expand_pattern("(Schalte|Mache) [die ]Pumpe an", cap=16)}
     assert "schalte pumpe an" in texts
     assert "mache die pumpe an" in texts
 
@@ -69,16 +69,24 @@ def test_expand_cap_zero_disables_expansion() -> None:
 
 def test_expand_records_slots_in_order() -> None:
     out = expand_pattern("Wetter um {stunde} Uhr am {tag}", cap=16)
-    for _, slots in out:
+    for _, _, slots in out:
         assert slots == ["stunde", "tag"]
-    assert all(SLOT_WILDCARD in t for (t, _) in out)
+    assert all(SLOT_WILDCARD in t for (t, _, _) in out)
 
 
 def test_expand_records_slots_with_list_reference() -> None:
     # `{name:list}` syntax is also supported; only the name is captured.
     out = expand_pattern("Wetter um {stunde:time} Uhr", cap=16)
-    for _, slots in out:
+    for _, _, slots in out:
         assert slots == ["stunde"]
+
+
+def test_expand_preserves_case_in_display_text() -> None:
+    out = expand_pattern("(Spiele|Starte) WDR (Aktuell|aktuell)", cap=16)
+    displays = {d for (_, d, _) in out}
+    texts = {t for (t, _, _) in out}
+    assert "Spiele WDR Aktuell" in displays
+    assert "spiele wdr aktuell" in texts
 
 
 def test_score_handles_typos() -> None:
@@ -189,6 +197,16 @@ def test_extract_slots_multi_token_slot_value() -> None:
         slot_names=["area"],
     )
     assert extract_slots("test zwei im wohn zimmern", cand) == ["wohn zimmern"]
+
+
+def test_extract_slots_preserves_user_casing() -> None:
+    cand = Candidate(
+        intent="Einkauf_Add",
+        pattern_idx=0,
+        text=f"add {SLOT_WILDCARD} to the shopping list",
+        slot_names=["item"],
+    )
+    assert extract_slots("add Milk to the shopping list", cand) == ["Milk"]
 
 
 def test_extract_slots_recovers_from_stt_split_token() -> None:
@@ -313,7 +331,7 @@ def test_resolver_inlines_unknown_rule_unchanged() -> None:
 def test_expand_pattern_uses_resolver_rules() -> None:
     r = Resolver(expansion_rules={"gruss": ["hallo", "moin"]})
     out = expand_pattern("<gruss> closest_intent", cap=16, resolver=r)
-    texts = [t for (t, _) in out]
+    texts = [t for (t, _, _) in out]
     assert "hallo closest_intent" in texts
     assert "moin closest_intent" in texts
 
@@ -347,7 +365,9 @@ def test_build_canonical_uses_resolver_for_slot_value() -> None:
         slot_names=["area"],
     )
     canonical = build_canonical(cand, ["wohnzma"], resolver=r)
-    assert canonical == "schalte das licht im wohnzimmer an"
+    # Resolver returns the slot value with its registered casing,
+    # so hassil sees `Wohnzimmer` rather than the user's lowercased speech.
+    assert canonical == "schalte das licht im Wohnzimmer an"
 
 
 def test_build_canonical_keeps_raw_when_resolver_finds_nothing() -> None:

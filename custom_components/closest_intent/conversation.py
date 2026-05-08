@@ -312,12 +312,15 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             for idx, pat in enumerate(patterns):
                 if kept >= PER_INTENT_CANDIDATE_CAP:
                     break
-                for text, slot_names in expand_pattern(pat, self._expansion_cap, resolver=resolver):
+                for text, display_text, slot_names in expand_pattern(
+                    pat, self._expansion_cap, resolver=resolver
+                ):
                     candidates.append(
                         Candidate(
                             intent=intent_name,
                             pattern_idx=idx,
                             text=text,
+                            display_text=display_text,
                             slot_names=slot_names,
                         )
                     )

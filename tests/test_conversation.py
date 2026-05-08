@@ -181,7 +181,7 @@ async def test_passthrough_when_no_match(hass, _capture_async_converse):
 
 @pytest.mark.asyncio
 async def test_fuzzy_hit_no_slots(hass, _capture_async_converse):
-    """Fuzzy match -> canonical sentence (lowercased, normalised) forwarded."""
+    """Fuzzy match -> canonical sentence (case-preserving) forwarded."""
     hass.data.setdefault(DOMAIN, {})[KEY_CONVERSATION_INTENTS] = {
         "PumpeAn": ["Pumpe an"],
     }
@@ -189,7 +189,7 @@ async def test_fuzzy_hit_no_slots(hass, _capture_async_converse):
     await agent.async_added_to_hass()
 
     await agent.async_process(_conversation_input("pumpr an"))
-    assert _capture_async_converse["text"] == "pumpe an"
+    assert _capture_async_converse["text"] == "Pumpe an"
 
 
 @pytest.mark.asyncio
@@ -225,7 +225,7 @@ async def test_slot_extraction_and_resolution(hass, _capture_async_converse):
     await agent.async_added_to_hass()
 
     await agent.async_process(_conversation_input("test zwei im wohnzma"))
-    assert _capture_async_converse["text"] == "test zwei im wohnzimmer"
+    assert _capture_async_converse["text"] == "Test zwei im Wohnzimmer"
 
 
 @pytest.mark.asyncio

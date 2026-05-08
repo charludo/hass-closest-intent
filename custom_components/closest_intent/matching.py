@@ -104,7 +104,20 @@ class Candidate:
     """Index into the intent's original pattern list (for debugging)."""
 
     text: str
-    """Flattened text used for scoring. ``SLOT_WILDCARD`` stands in for slots."""
+    """Flattened text used for scoring. ``SLOT_WILDCARD`` stands in for slots.
+
+    Lowercased and whitespace-collapsed.
+    """
+
+    display_text: str = ""
+    """
+    Same flattened pattern as ``text`` but with the intent author's
+    original casing preserved (still whitespace-collapsed).
+
+    Used by ``build_canonical`` so the sentence forwarded to hassil keeps
+    case-sensitive tokens intact. Defaults to ``text`` when a ``Candidate``
+    is built without an explicit display form.
+    """
 
     slot_names: list[str] = field(default_factory=list)
     """
@@ -122,9 +135,9 @@ def expand_pattern(
     pattern: str,
     cap: int,
     resolver: Resolver | None = None,
-) -> list[tuple[str, list[str]]]:
+) -> list[tuple[str, str, list[str]]]:
     """
-    Expand a Hassil-style pattern into ``[(text, slot_lists), ...]``.
+    Expand a Hassil-style pattern into ``[(text, display_text, slot_lists), ...]``.
 
     Handles ``[optional]``, ``(a|b|c)``, ``{slot}``/``{slot:capture}`` and,
     if a ``resolver`` is supplied, ``<rule>`` references (inlined into
@@ -144,7 +157,7 @@ def expand_pattern(
     if cap == 0:
         text = _ALT_RE.sub(lambda m: m.group(1).split("|")[0], pat)
         text = _OPT_RE.sub(lambda m: m.group(1).split("|")[0], text)
-        return [(_normalise(text), list(slot_lists))]
+        return [(_normalise(text), _normalise_keepcase(text), list(slot_lists))]
 
     variants: list[str] = [pat]
     while True:
@@ -182,7 +195,7 @@ def expand_pattern(
         if text in seen:
             continue
         seen.add(text)
-        out.append((text, list(slot_lists)))
+        out.append((text, _normalise_keepcase(v), list(slot_lists)))
         if len(out) >= cap:
             break
     return out
@@ -190,7 +203,12 @@ def expand_pattern(
 
 def _normalise(s: str) -> str:
     """Lowercase, strip extra whitespace and trailing punctuation."""
-    s = re.sub(r"\s+", " ", s).strip().lower()
+    return _normalise_keepcase(s).lower()
+
+
+def _normalise_keepcase(s: str) -> str:
+    """Strip extra whitespace and trailing punctuation. Preserve case."""
+    s = re.sub(r"\s+", " ", s).strip()
     s = s.rstrip("?.!,;:")
     return s
 
@@ -452,7 +470,12 @@ def extract_slots(user_text: str, candidate: Candidate) -> list[str] | None:
     if len(parts) - 1 != len(candidate.slot_names):
         return None
 
-    user = _normalise(user_text)
+    # Try to align on case-preserving display string.
+    # In the rare case where lower/upper case have different amount of utf8 chars
+    # (e.g. Turkish ``İ``) fall back to the lowercased capture for that slot.
+    user_display = _normalise_keepcase(user_text)
+    user = user_display.lower()
+    indices_aligned = len(user) == len(user_display)
     cursor = 0
     captured: list[str] = []
 
@@ -470,7 +493,8 @@ def extract_slots(user_text: str, candidate: Candidate) -> list[str] | None:
         else:
             slot_end = len(user)
 
-        captured.append(_strip_stt_noise(user[end_pos:slot_end].strip()))
+        source = user_display if indices_aligned else user
+        captured.append(_strip_stt_noise(source[end_pos:slot_end].strip()))
         cursor = slot_end
 
     return captured
@@ -483,16 +507,17 @@ def build_canonical(
     slot_resolution_threshold: int = 70,
 ) -> str:
     """
-    Reconstruct a clean sentence from ``candidate`` with slot values.
+    Reconstruct a clean, case-preserving sentence from ``candidate`` with slot values.
 
     If ``resolver`` is supplied, each captured slot value is fuzz-matched
     against the slot's known values (``resolver.slot_values[list_name]``)
     and replaced with the closest known value when one scores above ``slot_resolution_threshold``.
     Otherwise (or when nothing scores high enough) the user's raw spoken text is preserved.
     """
-    if SLOT_WILDCARD not in candidate.text:
-        return candidate.text
-    parts = candidate.text.split(SLOT_WILDCARD)
+    template = candidate.display_text or candidate.text
+    if SLOT_WILDCARD not in template:
+        return template
+    parts = template.split(SLOT_WILDCARD)
     out: list[str] = [parts[0]]
     for i, raw in enumerate(captured):
         list_name = candidate.slot_names[i] if i < len(candidate.slot_names) else None
@@ -502,4 +527,4 @@ def build_canonical(
             value = raw
         out.append(value)
         out.append(parts[i + 1])
-    return _normalise("".join(out))
+    return _normalise_keepcase("".join(out))
