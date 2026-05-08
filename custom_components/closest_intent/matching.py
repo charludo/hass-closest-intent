@@ -201,13 +201,23 @@ def expand_pattern(
     return out
 
 
+_MATCH_PUNCT_RE = re.compile(r"[^\w\s\x00]", re.UNICODE)
+
+
 def _normalise(s: str) -> str:
-    """Lowercase, strip extra whitespace and trailing punctuation."""
-    return _normalise_keepcase(s).lower()
+    """Lowercase, replace punctuation with spaces, collapse whitespace."""
+    return _normalise_for_capture(s).lower()
+
+
+def _normalise_for_capture(s: str) -> str:
+    """Replace punctuation with spaces, collapse whitespace."""
+    s = _MATCH_PUNCT_RE.sub(" ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 
 def _normalise_keepcase(s: str) -> str:
-    """Strip extra whitespace and trailing punctuation. Preserve case."""
+    """Used for the candidate's ``display_text``, passed on to hassil."""
     s = re.sub(r"\s+", " ", s).strip()
     s = s.rstrip("?.!,;:")
     return s
@@ -456,7 +466,7 @@ def extract_slots(user_text: str, candidate: Candidate) -> list[str] | None:
     # Try to align on case-preserving display string.
     # In the rare case where lower/upper case have different amount of utf8 chars
     # (e.g. Turkish ``İ``) fall back to the lowercased capture for that slot.
-    user_display = _normalise_keepcase(user_text)
+    user_display = _normalise_for_capture(user_text)
     user = user_display.lower()
     indices_aligned = len(user) == len(user_display)
     cursor = 0

@@ -317,6 +317,10 @@ TYPO_CASES = [
     ("UhrZeit", "wie sät ist es"),  # one-char drop
     ("WetterHeute", "wie warm ist es draussn"),  # one-char typo
     ("Tagesschau", "spiel tagesshau"),  # one-char typo
+    # yeah these are not really typos, just irrelevant, but w/e
+    ("WDR_Aktuell", "WDR-Aktuell"),  # internal punctuation in user input
+    ("WDR_Aktuell", "WDR.Aktuell"),
+    ("UhrZeit", "Wie spät ist es?"),  # trailing sentence punctuation
 ]
 
 
