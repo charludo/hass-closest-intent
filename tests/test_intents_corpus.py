@@ -25,6 +25,8 @@ from matching import (  # type: ignore  # noqa: E402
 
 THRESHOLD = 70
 EXPANSION_CAP = 32
+_RESOLVER = Resolver(match_threshold=THRESHOLD)
+_RESOLVER_ANY = Resolver(match_threshold=0)
 
 
 CORPUS: dict[str, list[str]] = {
@@ -300,7 +302,7 @@ NOSLOT_PARAMS = [
 @pytest.mark.parametrize("intent_name,phrase", NOSLOT_PARAMS)
 def test_corpus_clean_phrase_matches(intent_name: str, phrase: str) -> None:
     """Exact corpus phrase must match its own intent above threshold."""
-    match = find_best(phrase, _CANDIDATES, threshold=THRESHOLD)
+    match = find_best(phrase, _CANDIDATES, _RESOLVER)
     assert match is not None, f"no match for {phrase!r}"
     assert match[0].intent == intent_name, (
         f"{phrase!r} matched {match[0].intent!r} instead of {intent_name!r}"
@@ -326,7 +328,7 @@ TYPO_CASES = [
 
 @pytest.mark.parametrize("intent_name,phrase", TYPO_CASES)
 def test_corpus_typo_matches(intent_name: str, phrase: str) -> None:
-    match = find_best(phrase, _CANDIDATES, threshold=THRESHOLD)
+    match = find_best(phrase, _CANDIDATES, _RESOLVER)
     assert match is not None, f"no match for typo'd {phrase!r}"
     assert match[0].intent == intent_name
 
@@ -353,7 +355,7 @@ def test_slot_corpus_extracts(
         )
         for text, display_text, slots in expansions
     ]
-    match = find_best(user_text, candidates, threshold=THRESHOLD)
+    match = find_best(user_text, candidates, _RESOLVER)
     assert match is not None, f"no match for {user_text!r}"
 
     # Walk siblings: the highest-scoring expansion may not be the one
@@ -365,7 +367,7 @@ def test_slot_corpus_extracts(
     # captured something.
     best = None
     for c, _s in sorted(
-        ((c, find_best(user_text, [c], 0)[1]) for c in candidates),  # type: ignore
+        ((c, find_best(user_text, [c], _RESOLVER_ANY)[1]) for c in candidates),
         key=lambda kv: -kv[1],
     ):
         captured = extract_slots(user_text, c)
@@ -399,7 +401,7 @@ def test_resolver_canonicalises_typo_d_area() -> None:
     ]
     resolver = Resolver(slot_values={"area": ["Wohnzimmer", "Büro", "Küche"]})
     user = "test zwei im wohnzma"
-    match = find_best(user, candidates, threshold=THRESHOLD)
+    match = find_best(user, candidates, _RESOLVER)
     assert match is not None
     captured = extract_slots(user, match[0])
     assert captured is not None
@@ -446,7 +448,7 @@ def _agent_match(user: str, candidates: list[Candidate]) -> tuple[str, list[str]
     Mimic the agent's full match -> extract -> fallback flow without
     booting the conversation entity. Returns (intent, captured) or None.
     """
-    match = find_best(user, candidates, threshold=THRESHOLD)
+    match = find_best(user, candidates, _RESOLVER)
     if match is None:
         return None
     candidate, _ = match
@@ -457,7 +459,7 @@ def _agent_match(user: str, candidates: list[Candidate]) -> tuple[str, list[str]
         # walk same-intent siblings in score order until one extracts
         scored = sorted(
             (
-                (c, find_best(user, [c], 0)[1])
+                (c, find_best(user, [c], _RESOLVER_ANY)[1])
                 for c in candidates  # type: ignore
                 if c.intent == candidate.intent and c.has_slots
             ),
@@ -535,7 +537,7 @@ def test_regression_setze_milch_picks_setze_anchored_expansion() -> None:
 
     # Also assert the chosen candidate is the setze-anchored one,
     # not the bare slot-leading one.
-    match = find_best(user, pool, threshold=THRESHOLD)
+    match = find_best(user, pool, _RESOLVER)
     assert match is not None
     candidate, _ = match
     leading = candidate.text.split(SLOT_WILDCARD)[0].strip()

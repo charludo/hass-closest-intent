@@ -285,6 +285,8 @@ class ClosestIntentAgent(conversation.ConversationEntity):
     def _build_pool(self, language: str) -> tuple[Resolver, list[Candidate], list[Candidate]]:
         custom_docs = self._load_custom_sentences(language)
         resolver = self._build_resolver(language, custom_docs)
+        resolver.match_threshold = self._threshold
+        resolver.slot_resolution_threshold = self._threshold
 
         user_intents = self._gather_user_intents(custom_docs)
         user_candidates = self._expand_intents(user_intents, resolver)
@@ -646,7 +648,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         slots do extract. With ``slot_extraction=False`` slot-bearing matches
         are skipped (passthrough).
         """
-        match = find_best(text, candidates, self._threshold)
+        match = find_best(text, candidates, resolver)
         if match is None:
             return None
         candidate, score_value = match
@@ -656,7 +658,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 return None
             captured = extract_slots(text, candidate)
             if captured is None:
-                sibling = self._best_extractable_sibling(text, candidate, candidates)
+                sibling = self._best_extractable_sibling(text, candidate, candidates, resolver)
                 if sibling is None:
                     return None
                 candidate, captured, score_value = sibling
@@ -689,18 +691,19 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         user_text: str,
         skip: Candidate,
         candidates: list[Candidate],
+        resolver: Resolver,
     ) -> tuple[Candidate, list[str], int] | None:
         """Highest-scoring same-intent slot-bearing sibling whose slots extract."""
         scored = sorted(
             (
-                (score(user_text, c.text), c)
+                (score(user_text, c.text, resolver), c)
                 for c in candidates
                 if c is not skip and c.intent == skip.intent and c.has_slots
             ),
             key=lambda sc: -sc[0],
         )
         for s, c in scored:
-            if s < self._threshold:
+            if s < resolver.match_threshold:
                 break
             captured = extract_slots(user_text, c)
             if captured is not None:

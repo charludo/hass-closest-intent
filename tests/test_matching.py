@@ -138,14 +138,14 @@ def test_find_best_picks_highest() -> None:
         Candidate(intent="A", pattern_idx=0, text="schalte das licht an"),
         Candidate(intent="B", pattern_idx=0, text="pumpe an"),
     ]
-    res = find_best("pumpr an", cands, threshold=60)
+    res = find_best("pumpr an", cands, Resolver(match_threshold=70))
     assert res is not None
     assert res[0].intent == "B"
 
 
 def test_find_best_below_threshold() -> None:
     cands = [Candidate(intent="A", pattern_idx=0, text="hallo welt")]
-    assert find_best("purple banana", cands, threshold=70) is None
+    assert find_best("purple banana", cands, Resolver(match_threshold=70)) is None
 
 
 def test_extract_slots_returns_empty_for_no_slots() -> None:
