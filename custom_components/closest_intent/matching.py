@@ -38,6 +38,8 @@ class Resolver:
 
     expansion_rules: dict[str, list[str]] = field(default_factory=dict)
     slot_values: dict[str, list[str]] = field(default_factory=dict)
+    match_threshold: int = 70
+    slot_resolution_threshold: int = 70
 
     def inline_rules(self, pattern: str) -> str:
         """Replace ``<rule>`` references in ``pattern`` with ``(form1|form2|...)``.
@@ -63,10 +65,10 @@ class Resolver:
 
         return _RULE_RE.sub(sub, pattern)
 
-    def resolve_slot(self, captured: str, list_name: str | None, threshold: int = 70) -> str:
+    def resolve_slot(self, captured: str, list_name: str | None) -> str:
         """Fuzz-match ``captured`` against the ``list_name`` values.
 
-        Returns the closest known value if it scores above ``threshold``.
+        Returns the closest known value if it scores above ``self.slot_resolution_threshold``.
         Otherwise, returns ``captured`` unchanged so the canonical sentence
         carries through the user's original speech (and Hassil downstream
         either resolves it via its own rules or politely fails).
@@ -82,10 +84,11 @@ class Resolver:
             if v.lower() == captured_norm:
                 return v
 
+        threshold = self.slot_resolution_threshold
         best: str | None = None
         best_score = 0
         for v in values:
-            s = int(fuzz.token_sort_ratio(captured_norm, v.lower()))
+            s = int(fuzz.token_sort_ratio(captured_norm, v.lower(), score_cutoff=threshold))
             if s > best_score:
                 best, best_score = v, s
         if best is not None and best_score >= threshold:
@@ -252,7 +255,9 @@ def _anchor_offset_tokens(anchor: str, user_norm: str, *, from_end: bool) -> int
         return 0
     if not user_norm:
         return None
-    align = fuzz.partial_ratio_alignment(anchor, user_norm)
+    align = fuzz.partial_ratio_alignment(
+        anchor, user_norm, score_cutoff=_ANCHOR_ALIGNMENT_MIN_SCORE
+    )
     if align is None or align.score < _ANCHOR_ALIGNMENT_MIN_SCORE:
         return None
     if from_end:
@@ -300,7 +305,7 @@ def _anchor_penalty(parts: list[str], user_norm: str) -> int:
     return penalty
 
 
-def score(user_text: str, candidate_text: str) -> int:
+def score(user_text: str, candidate_text: str, resolver: Resolver | None = None) -> int:
     """
     Similarity 0..100 with the slot wildcard ignored.
 
@@ -316,16 +321,17 @@ def score(user_text: str, candidate_text: str) -> int:
     """
     user_norm = _normalise(user_text)
     cand_stripped = re.sub(r"\s+", " ", candidate_text.replace(SLOT_WILDCARD, " ")).strip()
+    threshold = resolver.match_threshold if resolver is not None else 70
 
     if SLOT_WILDCARD in candidate_text:
         if not cand_stripped:
             return 0
-        base = int(fuzz.partial_ratio(user_norm, cand_stripped))
+        base = int(fuzz.partial_ratio(user_norm, cand_stripped, score_cutoff=threshold))
         parts = candidate_text.split(SLOT_WILDCARD)
         penalty = _anchor_penalty(parts, user_norm)
         return max(0, base - penalty)
 
-    return int(fuzz.token_sort_ratio(user_norm, cand_stripped))
+    return int(fuzz.token_sort_ratio(user_norm, cand_stripped, score_cutoff=threshold))
 
 
 _FIND_BEST_TIEBREAK_BAND = 15
@@ -338,7 +344,7 @@ def _fixed_text_length(candidate_text: str) -> int:
 
 
 def find_best(
-    user_text: str, candidates: Iterable[Candidate], threshold: int
+    user_text: str, candidates: Iterable[Candidate], resolver: Resolver
 ) -> tuple[Candidate, int] | None:
     """
     Find the best candidate above ``threshold``.
@@ -352,9 +358,10 @@ def find_best(
     ``partial_ratio`` would happily scores the bare one at 100
     because its fixed tail is a substring.
     """
+    threshold = resolver.match_threshold
     scored: list[tuple[Candidate, int]] = []
     for c in candidates:
-        s = score(user_text, c.text)
+        s = score(user_text, c.text, resolver)
         if s < threshold:
             continue
         scored.append((c, s))
@@ -497,15 +504,15 @@ def build_canonical(
     candidate: Candidate,
     captured: list[str],
     resolver: Resolver | None = None,
-    slot_resolution_threshold: int = 70,
 ) -> str:
     """
     Reconstruct a clean, case-preserving sentence from ``candidate`` with slot values.
 
     If ``resolver`` is supplied, each captured slot value is fuzz-matched
     against the slot's known values (``resolver.slot_values[list_name]``)
-    and replaced with the closest known value when one scores above ``slot_resolution_threshold``.
-    Otherwise (or when nothing scores high enough) the user's raw spoken text is preserved.
+    and replaced with the closest known value when one scores above
+    ``resolver.slot_resolution_threshold``. Otherwise (or when nothing
+    scores high enough) the user's raw spoken text is preserved.
     """
     template = candidate.display_text or candidate.text
     if SLOT_WILDCARD not in template:
@@ -514,10 +521,7 @@ def build_canonical(
     out: list[str] = [parts[0]]
     for i, raw in enumerate(captured):
         list_name = candidate.slot_names[i] if i < len(candidate.slot_names) else None
-        if resolver is not None:
-            value = resolver.resolve_slot(raw, list_name, slot_resolution_threshold)
-        else:
-            value = raw
+        value = resolver.resolve_slot(raw, list_name) if resolver is not None else raw
         out.append(value)
         out.append(parts[i + 1])
     return _normalise_keepcase("".join(out))
