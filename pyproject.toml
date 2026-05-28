@@ -7,7 +7,7 @@ name = "closest_intent"
 version = "0.1.0"
 description = "Fuzzy intent matcher for HomeAssistant. Garbled STT output in, actual intent out."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "AGPL-3.0" }
 requires-python = ">=3.11"
 authors = [{ name = "Charlotte Hartmann Paludo" }]
 dependencies = ["rapidfuzz>=3.5.0"]
