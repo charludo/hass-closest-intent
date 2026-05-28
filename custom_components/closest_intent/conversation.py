@@ -23,6 +23,7 @@ try:
         CONF_FALLBACK_AGENT,
         CONF_INCLUDE_BUILTINS,
         CONF_SLOT_EXTRACTION,
+        CONF_SLOT_THRESHOLD,
         CONF_THRESHOLD,
         DEFAULT_EXPANSION_CAP,
         DEFAULT_FALLBACK_AGENT,
@@ -53,6 +54,7 @@ except ImportError:  # pragma: no cover
         CONF_FALLBACK_AGENT,
         CONF_INCLUDE_BUILTINS,
         CONF_SLOT_EXTRACTION,
+        CONF_SLOT_THRESHOLD,
         CONF_THRESHOLD,
         DEFAULT_EXPANSION_CAP,
         DEFAULT_FALLBACK_AGENT,
@@ -98,6 +100,7 @@ async def async_setup_entry(
     agent = ClosestIntentAgent(
         hass,
         threshold=opt(CONF_THRESHOLD, DEFAULT_THRESHOLD),
+        slot_threshold=opt(CONF_SLOT_THRESHOLD, None),
         expansion_cap=opt(CONF_EXPANSION_CAP, DEFAULT_EXPANSION_CAP),
         denylist=opt(CONF_DENYLIST, None),
         include_builtins=opt(CONF_INCLUDE_BUILTINS, DEFAULT_INCLUDE_BUILTINS),
@@ -126,6 +129,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
     agent.apply_options(
         threshold=opt(CONF_THRESHOLD, DEFAULT_THRESHOLD),
+        slot_threshold=opt(CONF_SLOT_THRESHOLD, None),
         expansion_cap=opt(CONF_EXPANSION_CAP, DEFAULT_EXPANSION_CAP),
         denylist=opt(CONF_DENYLIST, None),
         include_builtins=opt(CONF_INCLUDE_BUILTINS, DEFAULT_INCLUDE_BUILTINS),
@@ -144,6 +148,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         hass: HomeAssistant,
         *,
         threshold: int,
+        slot_threshold: int | None,
         expansion_cap: int,
         denylist: list[str] | None,
         include_builtins: bool,
@@ -153,6 +158,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
     ) -> None:
         self.hass = hass
         self._threshold = threshold
+        self._slot_threshold = slot_threshold
         self._expansion_cap = expansion_cap
         self._denylist = set(denylist) if denylist else None
         self._include_builtins = include_builtins
@@ -178,6 +184,10 @@ class ClosestIntentAgent(conversation.ConversationEntity):
     @property
     def supported_languages(self) -> list[str] | str:
         return conversation.MATCH_ALL
+
+    @property
+    def _effective_slot_threshold(self) -> int:
+        return self._slot_threshold if self._slot_threshold is not None else self._threshold
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -208,6 +218,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         self,
         *,
         threshold: int,
+        slot_threshold: int | None,
         expansion_cap: int,
         denylist: list[str] | None,
         include_builtins: bool,
@@ -215,6 +226,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         fallback_agent_id: str,
     ) -> None:
         self._threshold = threshold
+        self._slot_threshold = slot_threshold
         self._expansion_cap = expansion_cap
         self._denylist = set(denylist) if denylist else None
         self._include_builtins = include_builtins
@@ -648,6 +660,8 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         slots do extract. With ``slot_extraction=False`` slot-bearing matches
         are skipped (passthrough).
         """
+        resolver.match_threshold = self._threshold
+        resolver.slot_resolution_threshold = self._effective_slot_threshold
         match = find_best(text, candidates, resolver)
         if match is None:
             return None
@@ -852,6 +866,8 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             "version": VERSION,
             "entry_id": self._entry_id,
             "threshold": self._threshold,
+            "slot_threshold": self._slot_threshold,
+            "effective_slot_threshold": self._effective_slot_threshold,
             "expansion_cap": self._expansion_cap,
             "include_builtins": self._include_builtins,
             "slot_extraction": self._slot_extraction,

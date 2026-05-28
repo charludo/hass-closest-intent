@@ -219,6 +219,7 @@ The integration can be set up entirely in the UI (**Settings** -> **Devices & se
 | Option | Default | Meaning |
 | ------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `threshold` | `70` | Minimum fuzzy-match score (0–100) for a candidate to be considered. Higher = stricter. Below the threshold, the original text is forwarded unchanged to the `fallback_agent`. |
+| `slot_threshold` | `threshold` | Minimum fuzzy-match score (0–100) for resolving a captured slot value against the slot's known list values. Higher = stricter, lower = more aggressive correction. Useful when intents usually match, but e.g. entity names are frequently misunderstood. Defaults to `threshold` is. |
 | `expansion_cap` | `16` | Maximum number of surface forms generated per pattern. Bounds the alternation/optional explosion. `0` disables expansion entirely (first branch only). Builtin intent expansion is always capped at `32`.|
 | `denylist` | `[]` | Intent names to exclude from matching. Useful when a built-in or imported intent collides with your own. |
 | `include_builtins` | `false` | Also fuzzy-match against HomeAssistant's built-in intents (`HassTurnOn` etc.). Off by default, see section on limitations. |
@@ -230,6 +231,7 @@ The integration can be set up entirely in the UI (**Settings** -> **Devices & se
 ```yaml
 closest_intent:
   threshold: 70
+  slot_threshold: 70
   expansion_cap: 16
   denylist: []
   include_builtins: false

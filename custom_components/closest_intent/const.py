@@ -20,6 +20,7 @@ def _read_version() -> str:
 VERSION = _read_version()
 
 CONF_THRESHOLD = "threshold"
+CONF_SLOT_THRESHOLD = "slot_threshold"
 CONF_EXPANSION_CAP = "expansion_cap"
 CONF_DENYLIST = "denylist"
 CONF_INCLUDE_BUILTINS = "include_builtins"

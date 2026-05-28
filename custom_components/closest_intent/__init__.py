@@ -20,6 +20,7 @@ from .const import (
     CONF_FALLBACK_AGENT,
     CONF_INCLUDE_BUILTINS,
     CONF_SLOT_EXTRACTION,
+    CONF_SLOT_THRESHOLD,
     CONF_THRESHOLD,
     DEFAULT_EXPANSION_CAP,
     DEFAULT_FALLBACK_AGENT,
@@ -43,6 +44,9 @@ CONFIG_SCHEMA = vol.Schema(
         DOMAIN: vol.Schema(
             {
                 vol.Optional(CONF_THRESHOLD, default=DEFAULT_THRESHOLD): vol.All(
+                    vol.Coerce(int), vol.Range(min=0, max=100)
+                ),
+                vol.Optional(CONF_SLOT_THRESHOLD): vol.All(
                     vol.Coerce(int), vol.Range(min=0, max=100)
                 ),
                 vol.Optional(CONF_EXPANSION_CAP, default=DEFAULT_EXPANSION_CAP): vol.All(
@@ -117,6 +121,8 @@ def _format_dump_summary(states: dict[str, dict]) -> str:
         lines.append(f"Agent {entry_id}")
         lines.append(
             f"  threshold={state['threshold']} "
+            f"slot_threshold={state.get('slot_threshold')} "
+            f"(effective={state.get('effective_slot_threshold')}) "
             f"expansion_cap={state['expansion_cap']} "
             f"include_builtins={state['include_builtins']} "
             f"slot_extraction={state['slot_extraction']}"
