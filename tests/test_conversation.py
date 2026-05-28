@@ -113,6 +113,7 @@ def _make_agent(
     hass: SimpleNamespace,
     *,
     threshold: int = 70,
+    slot_threshold: int | None = None,
     expansion_cap: int = 16,
     denylist=None,
     include_builtins: bool = False,
@@ -122,6 +123,7 @@ def _make_agent(
     return ClosestIntentAgent(
         hass,
         threshold=threshold,
+        slot_threshold=slot_threshold,
         expansion_cap=expansion_cap,
         denylist=denylist,
         include_builtins=include_builtins,
@@ -344,6 +346,57 @@ async def test_custom_sentences_loaded(hass, _capture_async_converse, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_slot_threshold_override_resolves_borderline_capture(hass, _capture_async_converse):
+    """Test that lowering the slot threshold improves slot matching."""
+    import sys as _sys
+
+    fake_ar = _sys.modules.setdefault(
+        "homeassistant.helpers.area_registry", type(_sys)("homeassistant.helpers.area_registry")
+    )
+    fake_fr = _sys.modules.setdefault(
+        "homeassistant.helpers.floor_registry", type(_sys)("homeassistant.helpers.floor_registry")
+    )
+    fake_er = _sys.modules.setdefault(
+        "homeassistant.helpers.entity_registry", type(_sys)("homeassistant.helpers.entity_registry")
+    )
+
+    class _Area:
+        def __init__(self, name: str, aliases=None) -> None:
+            self.name = name
+            self.aliases = aliases or []
+
+    fake_ar.async_get = lambda hass: SimpleNamespace(
+        async_list_areas=lambda: [_Area("Wohnzimmer"), _Area("Büro")]
+    )
+    fake_fr.async_get = lambda hass: SimpleNamespace(async_list_floors=lambda: [])
+    fake_er.async_get = lambda hass: SimpleNamespace(entities={})
+
+    hass.data.setdefault(DOMAIN, {})[KEY_CONVERSATION_INTENTS] = {
+        "Test_Area": ["Test zwei im {area}"],
+    }
+
+    # "wozim" vs "Wohnzimmer" scores well under 70
+    agent = _make_agent(hass, threshold=70)
+    await agent.async_added_to_hass()
+
+    await agent.async_process(_conversation_input("test zwei im wozim"))
+    assert _capture_async_converse["text"] == "Test zwei im wozim"
+
+    agent.apply_options(
+        threshold=70,
+        slot_threshold=60,
+        expansion_cap=16,
+        denylist=None,
+        include_builtins=False,
+        slot_extraction=True,
+        fallback_agent_id="conversation.home_assistant",
+    )
+
+    await agent.async_process(_conversation_input("test zwei im wozim"))
+    assert _capture_async_converse["text"] == "Test zwei im Wohnzimmer"
+
+
+@pytest.mark.asyncio
 async def test_apply_options_clears_pools(hass, _capture_async_converse):
     """Live option changes must invalidate cached pools."""
     hass.data.setdefault(DOMAIN, {})[KEY_CONVERSATION_INTENTS] = {
@@ -355,6 +408,7 @@ async def test_apply_options_clears_pools(hass, _capture_async_converse):
     assert agent._pools, "pre-warm should populate the cache"
     agent.apply_options(
         threshold=80,
+        slot_threshold=None,
         expansion_cap=16,
         denylist=None,
         include_builtins=False,

@@ -19,6 +19,7 @@ from .const import (
     CONF_FALLBACK_AGENT,
     CONF_INCLUDE_BUILTINS,
     CONF_SLOT_EXTRACTION,
+    CONF_SLOT_THRESHOLD,
     CONF_THRESHOLD,
     DEFAULT_EXPANSION_CAP,
     DEFAULT_FALLBACK_AGENT,
@@ -86,6 +87,21 @@ def _build_schema(
                 )
             ),
             vol.Required(
+                CONF_SLOT_THRESHOLD,
+                default=defaults.get(
+                    CONF_SLOT_THRESHOLD,
+                    defaults.get(CONF_THRESHOLD, DEFAULT_THRESHOLD),
+                ),
+                description=(
+                    "Slot match threshold (higher = stricter).",
+                    "Lower this if intent matching works well, but slot values often fail to match",
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=100, step=1, mode=selector.NumberSelectorMode.SLIDER
+                )
+            ),
+            vol.Required(
                 CONF_EXPANSION_CAP,
                 default=defaults.get(CONF_EXPANSION_CAP, DEFAULT_EXPANSION_CAP),
                 description="Pattern expansion cap (0 disables [...] / (a|b))",
@@ -128,6 +144,8 @@ def _normalise(user_input: dict[str, Any]) -> dict[str, Any]:
     out = dict(user_input)
     if CONF_THRESHOLD in out:
         out[CONF_THRESHOLD] = int(out[CONF_THRESHOLD])
+    if CONF_SLOT_THRESHOLD in out and out[CONF_SLOT_THRESHOLD] is not None:
+        out[CONF_SLOT_THRESHOLD] = int(out[CONF_SLOT_THRESHOLD])
     if CONF_EXPANSION_CAP in out:
         out[CONF_EXPANSION_CAP] = int(out[CONF_EXPANSION_CAP])
     deny = out.get(CONF_DENYLIST)
