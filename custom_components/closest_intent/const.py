@@ -46,7 +46,7 @@ SERVICE_DUMP_CANDIDATES = "dump_candidates"
 SERVICE_PARSE = "parse_sentence"
 
 # Hard ceiling on candidates kept per intent after pattern expansion.
-PER_INTENT_CANDIDATE_CAP = 32
+PER_INTENT_CANDIDATE_CAP = 256
 
 # Marker substituted in for `{slot}` placeholders during pattern expansion.
 # Matched as a wildcard during scoring; mined out for slot extraction.

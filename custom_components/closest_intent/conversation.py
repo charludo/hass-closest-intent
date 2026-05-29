@@ -489,15 +489,31 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         intents: dict[str, list[str]],
         resolver: Resolver,
     ) -> list[Candidate]:
+        """Expand ``intents`` into candidates, round-robin across sentence patterns."""
         candidates: list[Candidate] = []
         for intent_name, patterns in intents.items():
-            kept = 0
+            per_pattern: list[tuple[int, list[tuple[str, str, list[str]]]]] = []
             for idx, pat in enumerate(patterns):
-                if kept >= PER_INTENT_CANDIDATE_CAP:
-                    break
-                for text, display_text, slot_names in expand_pattern(
-                    pat, self._expansion_cap, resolver=resolver
-                ):
+                forms = list(expand_pattern(pat, self._expansion_cap, resolver=resolver))
+                if forms:
+                    per_pattern.append((idx, forms))
+            if not per_pattern:
+                continue
+
+            # Dedupe across patterns within this intent.
+            seen_texts: set[str] = set()
+            kept = 0
+            depth = 0
+            while kept < PER_INTENT_CANDIDATE_CAP:
+                progress = False
+                for idx, forms in per_pattern:
+                    if depth >= len(forms):
+                        continue
+                    text, display_text, slot_names = forms[depth]
+                    progress = True
+                    if text in seen_texts:
+                        continue
+                    seen_texts.add(text)
                     candidates.append(
                         Candidate(
                             intent=intent_name,
@@ -509,12 +525,21 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                     )
                     kept += 1
                     if kept >= PER_INTENT_CANDIDATE_CAP:
-                        _LOGGER.debug(
-                            "closest_intent: %s hit per-intent cap (%d), truncating",
-                            intent_name,
-                            PER_INTENT_CANDIDATE_CAP,
-                        )
                         break
+                if not progress:
+                    break
+                depth += 1
+
+            total = sum(len(forms) for _, forms in per_pattern)
+            if kept < total:
+                _LOGGER.debug(
+                    "closest_intent: %s hit per-intent cap (%d) or duplicate ceiling, "
+                    "kept %d of %d generated expansions",
+                    intent_name,
+                    PER_INTENT_CANDIDATE_CAP,
+                    kept,
+                    total,
+                )
         return candidates
 
     def _build_resolver(
