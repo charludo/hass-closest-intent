@@ -39,6 +39,8 @@ try:
         VERSION,
     )
     from .matching import (
+        _RULE_RE,
+        _SLOT_RE,
         Candidate,
         Resolver,
         build_canonical,
@@ -70,6 +72,8 @@ except ImportError:  # pragma: no cover
         VERSION,
     )
     from matching import (  # type: ignore
+        _RULE_RE,
+        _SLOT_RE,
         Candidate,
         Resolver,
         build_canonical,
@@ -452,11 +456,22 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 intents = None
 
             if intents is not None:
+                raw_rules = (raw or {}).get("expansion_rules") or {}
                 # Expansion rules -> list of surface forms.
                 for name, rule in (intents.expansion_rules or {}).items():
                     try:
                         forms = list(_dedupe(sample_expression(rule.expression, intents)))
                     except Exception:
+                        forms = []
+                    # When we can't expand a rule, do not leave its name in as a literal string.
+                    raw_text = raw_rules.get(name)
+                    if isinstance(raw_text, str) and raw_text:
+                        needs_raw = (
+                            not forms or _SLOT_RE.search(raw_text) or _RULE_RE.search(raw_text)
+                        )
+                        if needs_raw and raw_text not in forms:
+                            forms.insert(0, raw_text)
+                    if not forms:
                         continue
                     # Cap rule expansion to keep alternation explosions bounded.
                     resolver.expansion_rules[name] = forms[: max(self._expansion_cap, 32)]
