@@ -40,11 +40,12 @@ class Resolver:
     slot_values: dict[str, list[str]] = field(default_factory=dict)
     match_threshold: int = 70
     slot_resolution_threshold: int = 70
+    _unknown_rules_seen: set[str] = field(default_factory=set, repr=False)
 
     def inline_rules(self, pattern: str) -> str:
         """Replace ``<rule>`` references in ``pattern`` with ``(form1|form2|...)``.
 
-        Recursive!! Undefined rules ignored.
+        Recursive!! Unknown rules fall back to wildcard slots with the same name.
         """
         seen_in_chain: set[str] = set()
         return self._inline_rules_inner(pattern, seen_in_chain, depth=0)
@@ -55,11 +56,20 @@ class Resolver:
 
         def sub(m: re.Match[str]) -> str:
             rule = m.group(1)
-            if rule in seen or rule not in self.expansion_rules:
+            if rule in seen:
+                # In a recursion chain -- leave as-is to avoid infinite loop.
                 return m.group(0)
-            forms = self.expansion_rules[rule]
+            forms = self.expansion_rules.get(rule)
             if not forms:
-                return m.group(0)
+                # Unknown rules fall back to wildcard slot instead of dropping altogether.
+                if rule not in self._unknown_rules_seen:
+                    self._unknown_rules_seen.add(rule)
+                    _LOGGER.debug(
+                        "unknown expansion rule <%s>, substituting wildcard slot {%s}",
+                        rule,
+                        rule,
+                    )
+                return "{" + rule + "}"
             inner = "(" + "|".join(forms) + ")"
             return self._inline_rules_inner(inner, seen | {rule}, depth + 1)
 

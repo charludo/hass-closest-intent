@@ -315,9 +315,10 @@ def test_resolver_inlines_recursively() -> None:
     assert out == "((hier|dort) da|anders)"
 
 
-def test_resolver_inlines_unknown_rule_unchanged() -> None:
+def test_resolver_inlines_unknown_rule_as_wildcard_slot() -> None:
+    """Unknown rules must fall back to a {slot} wildcard."""
     r = Resolver()
-    assert r.inline_rules("<unknown> rest") == "<unknown> rest"
+    assert r.inline_rules("<unknown> rest") == "{unknown} rest"
 
 
 def test_expand_pattern_uses_resolver_rules() -> None:
