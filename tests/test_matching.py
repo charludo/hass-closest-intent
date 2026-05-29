@@ -321,6 +321,18 @@ def test_resolver_inlines_unknown_rule_as_wildcard_slot() -> None:
     assert r.inline_rules("<unknown> rest") == "{unknown} rest"
 
 
+def test_expand_pattern_rule_body_with_slot_produces_wildcard() -> None:
+    """When an <expansion rule>'s body is a {slot} reference, the rule must inline as the slot."""
+    from const import SLOT_WILDCARD  # type: ignore
+
+    r = Resolver(expansion_rules={"name": ["{name}"]})
+    out = expand_pattern("<name> an", cap=16, resolver=r)
+    texts = [t for (t, _, _) in out]
+    slot_lists = [s for (_, _, s) in out]
+    assert any(SLOT_WILDCARD in t for t in texts)
+    assert ["name"] in slot_lists
+
+
 def test_expand_pattern_uses_resolver_rules() -> None:
     r = Resolver(expansion_rules={"gruss": ["hallo", "moin"]})
     out = expand_pattern("<gruss> closest_intent", cap=16, resolver=r)
