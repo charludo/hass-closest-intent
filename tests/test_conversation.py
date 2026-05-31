@@ -135,11 +135,24 @@ def _make_agent(
     )
 
 
-def _conversation_input(text: str, language: str = "de"):
+def _conversation_input(
+    text: str,
+    language: str = "de",
+    *,
+    device_id: str | None = None,
+    satellite_id: str | None = None,
+    extra_system_prompt: str | None = None,
+):
     """Build a stubbed ConversationInput."""
     from homeassistant.components.conversation import ConversationInput  # type: ignore
 
-    return ConversationInput(text=text, language=language)
+    return ConversationInput(
+        text=text,
+        language=language,
+        device_id=device_id,
+        satellite_id=satellite_id,
+        extra_system_prompt=extra_system_prompt,
+    )
 
 
 @pytest.fixture
@@ -227,6 +240,81 @@ async def test_sibling_fallback(hass, _capture_async_converse):
     forwarded = _capture_async_converse["text"]
     assert "brot" in forwarded
     assert "auf die einkaufsliste" in forwarded
+
+
+@pytest.mark.asyncio
+async def test_device_and_satellite_ids_propagate_to_hassil(hass, _capture_async_converse):
+    """
+    The hassil forward must carry device_id/satellite_id so the default
+    agent can derive ``preferred_area_id`` from the invoking satellite.
+    """
+    hass.data.setdefault(DOMAIN, {})[KEY_CONVERSATION_INTENTS] = {
+        "PumpeAn": ["Pumpe an"],
+    }
+    agent = _make_agent(hass, threshold=70)
+    await agent.async_added_to_hass()
+
+    await agent.async_process(
+        _conversation_input(
+            "pumpr an",
+            device_id="dev-abc",
+            satellite_id="sat-xyz",
+            extra_system_prompt="be terse",
+        )
+    )
+
+    assert _capture_async_converse["agent_id"] == "conversation.home_assistant"
+    assert _capture_async_converse["device_id"] == "dev-abc"
+    assert _capture_async_converse["satellite_id"] == "sat-xyz"
+    assert _capture_async_converse["extra_system_prompt"] == "be terse"
+
+
+@pytest.mark.asyncio
+async def test_device_and_satellite_ids_propagate_to_fallback(
+    hass, _capture_async_converse, monkeypatch
+):
+    """
+    When the hassil forward returns an error result, the configured
+    fallback agent must also receive device_id/satellite_id.
+    """
+    hass.data.setdefault(DOMAIN, {})[KEY_CONVERSATION_INTENTS] = {
+        "PumpeAn": ["Pumpe an"],
+    }
+    agent = _make_agent(hass, threshold=70, fallback_agent_id="conversation.my_llm")
+    await agent.async_added_to_hass()
+
+    calls: list[dict] = []
+
+    async def _fake(**kwargs):
+        from homeassistant.components.conversation import (  # type: ignore
+            ConversationResult,
+        )
+
+        calls.append(kwargs)
+        if kwargs["agent_id"] == "conversation.home_assistant":
+            response = SimpleNamespace(error_code="no_intent_match")
+            return ConversationResult(response=response)
+        return ConversationResult(response={"text": kwargs["text"]})
+
+    monkeypatch.setattr("homeassistant.components.conversation.async_converse", _fake)
+
+    await agent.async_process(
+        _conversation_input(
+            "pumpr an",
+            device_id="dev-abc",
+            satellite_id="sat-xyz",
+            extra_system_prompt="be terse",
+        )
+    )
+
+    assert [c["agent_id"] for c in calls] == [
+        "conversation.home_assistant",
+        "conversation.my_llm",
+    ]
+    for call in calls:
+        assert call["device_id"] == "dev-abc"
+        assert call["satellite_id"] == "sat-xyz"
+        assert call["extra_system_prompt"] == "be terse"
 
 
 @pytest.mark.asyncio

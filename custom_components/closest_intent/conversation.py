@@ -634,6 +634,9 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 context=user_input.context,
                 language=user_input.language,
                 agent_id=_HASSIL_AGENT_ID,
+                device_id=user_input.device_id,
+                satellite_id=user_input.satellite_id,
+                extra_system_prompt=user_input.extra_system_prompt,
             )
         except Exception:
             _LOGGER.exception("forward to hassil failed for %r", forwarded_text)
@@ -652,6 +655,9 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 context=user_input.context,
                 language=user_input.language,
                 agent_id=self._fallback_agent_id,
+                device_id=user_input.device_id,
+                satellite_id=user_input.satellite_id,
+                extra_system_prompt=user_input.extra_system_prompt,
             )
         except Exception:
             _LOGGER.exception("fallback agent %s failed", self._fallback_agent_id)

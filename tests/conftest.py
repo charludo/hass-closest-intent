@@ -82,11 +82,17 @@ class _ConversationInput:
         language: str | None = None,
         conversation_id: str | None = None,
         context=None,
+        device_id: str | None = None,
+        satellite_id: str | None = None,
+        extra_system_prompt: str | None = None,
     ) -> None:
         self.text = text
         self.language = language
         self.conversation_id = conversation_id
         self.context = context
+        self.device_id = device_id
+        self.satellite_id = satellite_id
+        self.extra_system_prompt = extra_system_prompt
 
 
 class _ConversationResult:
