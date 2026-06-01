@@ -150,6 +150,52 @@ def test_score_slot_pattern_rejects_unrelated() -> None:
     assert score("ich mag musik", cand) < 70
 
 
+def test_score_slot_pattern_rejects_mid_word_anchor() -> None:
+    """
+    Regression: ``{geraet} an`` used to score 100 against ``"wann ist heute sonnenuntergang"``
+    because the trailing ``"an"`` anchor matched as a substring inside ``"sonnenuntergang"``.
+    """
+    cand = f"{SLOT_WILDCARD} an"
+    assert score("wann ist heute sonnenuntergang", cand) < 70
+
+
+def test_score_slot_proportion_penalty_for_oversized_input() -> None:
+    """A tiny fixed part shouldn't anchor a slot intent against a long user sentence."""
+    short_fixed = f"{SLOT_WILDCARD} an"
+    long_user = "wann geht heute der sonnenuntergang über die alpen"
+    assert score(long_user, short_fixed) < 70
+
+
+def test_score_slot_pattern_allows_multi_token_slot_value() -> None:
+    """Legitimate multi-word slot fills (e.g. ``"wohn zimmern"``) must still pass."""
+    cand = f"test zwei im {SLOT_WILDCARD}"
+    assert score("test zwei im wohn zimmern", cand) >= 80
+
+
+def test_extract_slots_prefers_word_boundary_over_substring_match() -> None:
+    """
+    Even when an unrelated input ends up being routed to a slotted candidate,
+    slot extraction must not snap fixed parts to mid-word substring matches.
+    """
+    cand = Candidate(
+        intent="On",
+        pattern_idx=0,
+        text=f"[schalte ][das ]{SLOT_WILDCARD} an",
+        slot_names=["geraet"],
+    )
+    out = extract_slots("schalte das licht an", cand)
+    assert out == ["licht"]
+
+    cand = Candidate(
+        intent="On",
+        pattern_idx=0,
+        text=f"{SLOT_WILDCARD} an",
+        slot_names=["geraet"],
+    )
+    out = extract_slots("licht an", cand)
+    assert out == ["licht"]
+
+
 def test_find_best_picks_highest() -> None:
     cands = [
         Candidate(intent="A", pattern_idx=0, text="schalte das licht an"),

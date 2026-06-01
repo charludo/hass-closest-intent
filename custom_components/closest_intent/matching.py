@@ -271,6 +271,8 @@ def _anchor_offset_tokens(anchor: str, user_norm: str, *, from_end: bool) -> int
 
     ``from_end=False`` measures tokens before the anchor,
     ``from_end=True`` measures tokens after the anchor's end.
+
+    Mid-word alignments are rejected.
     """
     if not anchor:
         return 0
@@ -282,8 +284,12 @@ def _anchor_offset_tokens(anchor: str, user_norm: str, *, from_end: bool) -> int
     if align is None or align.score < _ANCHOR_ALIGNMENT_MIN_SCORE:
         return None
     if from_end:
+        if align.dest_end < len(user_norm) and user_norm[align.dest_end].isalnum():
+            return None
         tail = user_norm[align.dest_end :]
         return len(tail.split())
+    if align.dest_start > 0 and user_norm[align.dest_start - 1].isalnum():
+        return None
     head = user_norm[: align.dest_start]
     return len(head.split())
 
@@ -326,6 +332,24 @@ def _anchor_penalty(parts: list[str], user_norm: str) -> int:
     return penalty
 
 
+_SLOT_TOKEN_BUDGET = 3
+_SLOT_PROPORTION_PENALTY_PER_TOKEN = 10
+_SLOT_PROPORTION_PENALTY_CAP = 40
+
+
+def _slot_proportion_penalty(cand_stripped: str, user_norm: str, slot_count: int) -> int:
+    """Penalty for slotted candidates whose fixed text is only a small part of the user input."""
+    if not cand_stripped or slot_count == 0:
+        return 0
+    fixed_tokens = len(cand_stripped.split())
+    user_tokens = len(user_norm.split())
+    expected_tokens = fixed_tokens + slot_count * _SLOT_TOKEN_BUDGET
+    excess = user_tokens - expected_tokens
+    if excess <= 0:
+        return 0
+    return min(_SLOT_PROPORTION_PENALTY_CAP, excess * _SLOT_PROPORTION_PENALTY_PER_TOKEN)
+
+
 def score(user_text: str, candidate_text: str, resolver: Resolver | None = None) -> int:
     """
     Similarity 0..100 with the slot wildcard ignored.
@@ -334,11 +358,7 @@ def score(user_text: str, candidate_text: str, resolver: Resolver | None = None)
 
     - **No slots**: ``token_sort_ratio`` on the whole phrase.
     - **With slots**: ``partial_ratio`` on the candidate's *fixed parts*
-      against the full user text, minus an edge-anchor misalignment
-      penalty (see ``_anchor_penalty``). Finds the best contiguous window
-      of the fixed parts within the user input, but rejects matches
-      where the leading/trailing fixed anchor doesn't actually sit at
-      the corresponding edge of the user phrase.
+      against the full user text, minus an edge-anchor misalignment penalty
     """
     user_norm = _normalise(user_text)
     cand_stripped = re.sub(r"\s+", " ", candidate_text.replace(SLOT_WILDCARD, " ")).strip()
@@ -350,6 +370,7 @@ def score(user_text: str, candidate_text: str, resolver: Resolver | None = None)
         base = int(fuzz.partial_ratio(user_norm, cand_stripped, score_cutoff=threshold))
         parts = candidate_text.split(SLOT_WILDCARD)
         penalty = _anchor_penalty(parts, user_norm)
+        penalty += _slot_proportion_penalty(cand_stripped, user_norm, len(parts) - 1)
         return max(0, base - penalty)
 
     return int(fuzz.token_sort_ratio(user_norm, cand_stripped, score_cutoff=threshold))
@@ -437,6 +458,24 @@ def _word_boundary_starts(sub: str, e: int, max_words: int = _MAX_BOUNDARY_LOOKA
     return out
 
 
+def _is_word_boundary_start(sub: str, pos: int) -> bool:
+    return pos == 0 or not sub[pos - 1].isalnum()
+
+
+def _is_word_boundary_end(sub: str, pos: int) -> bool:
+    return pos == len(sub) or not sub[pos].isalnum()
+
+
+_MID_WORD_ALIGNMENT_PENALTY = 25
+
+
+def _aligned_score(fixed: str, sub: str, s: int, e: int) -> int:
+    score = int(fuzz.ratio(fixed, sub[s:e]))
+    if not (_is_word_boundary_start(sub, s) and _is_word_boundary_end(sub, e)):
+        score -= _MID_WORD_ALIGNMENT_PENALTY
+    return score
+
+
 def _align_fixed_part(fixed: str, user: str, start: int) -> tuple[int, int] | None:
     """
     Find where ``fixed`` approximately occurs in ``user[start:]``.
@@ -447,6 +486,8 @@ def _align_fixed_part(fixed: str, user: str, start: int) -> tuple[int, int] | No
          with the highest ``fuzz.ratio`` against ``fixed``.
 
     Slot captures end up on token boundaries unless the input is genuinely mid-word.
+    Mid-word alignments are penalized so that a clean word-boundary match wins over a
+    perfect-but-incidental substring match.
     """
     sub = user[start:]
     if not fixed:
@@ -458,13 +499,13 @@ def _align_fixed_part(fixed: str, user: str, start: int) -> tuple[int, int] | No
         return None
     best_start = alignment.dest_start
     best_end = alignment.dest_end
-    best_score = fuzz.ratio(fixed, sub[best_start:best_end])
+    best_score = _aligned_score(fixed, sub, best_start, best_end)
     for cand_end in _word_boundary_ends(sub, best_start):
-        score = fuzz.ratio(fixed, sub[best_start:cand_end])
+        score = _aligned_score(fixed, sub, best_start, cand_end)
         if score > best_score:
             best_end, best_score = cand_end, score
     for cand_start in _word_boundary_starts(sub, alignment.dest_start):
-        score = fuzz.ratio(fixed, sub[cand_start:best_end])
+        score = _aligned_score(fixed, sub, cand_start, best_end)
         if score > best_score:
             best_start, best_score = cand_start, score
     return (start + best_start, start + best_end)
