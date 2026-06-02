@@ -170,6 +170,24 @@ class _HomeAssistant:
 ha_core.HomeAssistant = _HomeAssistant
 
 
+class _DoneTask:
+    def cancel(self) -> bool:
+        return False
+
+    def done(self) -> bool:
+        return True
+
+
+def _async_create_background_task(coro, name=None):
+    """FakeHass shim: synchronously drive the coroutine to completion."""
+    try:
+        while True:
+            coro.send(None)
+    except StopIteration:
+        pass
+    return _DoneTask()
+
+
 class _ConfigEntry:
     def __init__(
         self,

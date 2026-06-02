@@ -94,6 +94,8 @@ def _make_hass(tmp_path: Path, language: str = "de") -> SimpleNamespace:
     async def _run_in_executor(fn, *args):
         return fn(*args)
 
+    from conftest import _async_create_background_task  # type: ignore
+
     hass = SimpleNamespace(
         data={},
         bus=FakeBus(),
@@ -101,6 +103,7 @@ def _make_hass(tmp_path: Path, language: str = "de") -> SimpleNamespace:
         services=FakeServices(),
         _scheduled_actions=[],
         async_add_executor_job=_run_in_executor,
+        async_create_background_task=_async_create_background_task,
     )
     hass.config = SimpleNamespace(
         language=language,
