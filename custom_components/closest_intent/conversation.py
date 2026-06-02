@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterable
 
 from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigEntry
@@ -39,8 +38,6 @@ try:
         VERSION,
     )
     from .matching import (
-        _RULE_RE,
-        _SLOT_RE,
         Candidate,
         Resolver,
         build_canonical,
@@ -72,8 +69,6 @@ except ImportError:  # pragma: no cover
         VERSION,
     )
     from matching import (  # type: ignore
-        _RULE_RE,
-        _SLOT_RE,
         Candidate,
         Resolver,
         build_canonical,
@@ -178,6 +173,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         # the user pool produces no match.
         self._pools: dict[str, tuple[Resolver, list[Candidate], list[Candidate]]] = {}
         self._pool_locks: dict[str, asyncio.Lock] = {}
+        self._builtin_intents_cache: dict[str, dict[str, list[str]]] = {}
         self._builtin_overrides: dict[str, list[Candidate]] = {}
         self._builtin_override_locks: dict[str, asyncio.Lock] = {}
         self._rebuild_handle = None  # async_call_later cancel handle
@@ -239,6 +235,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         # Anything affecting candidate composition invalidates the pools.
         self._pools.clear()
         self._builtin_overrides.clear()
+        self._builtin_intents_cache.clear()
 
     @callback
     def _on_registry_event(self, _event) -> None:
@@ -253,6 +250,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         languages = list(self._pools.keys())
         self._pools.clear()
         self._builtin_overrides.clear()
+        self._builtin_intents_cache.clear()
         for lang in languages:
             try:
                 await self._async_get_pool(lang)
@@ -260,9 +258,14 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 _LOGGER.exception("closest_intent: rebuild for %s failed", lang)
 
     async def _async_get_builtin_override(
-        self, language: str, resolver: Resolver, user_intent_names: set[str]
+        self, language: str, resolver: Resolver
     ) -> list[Candidate]:
-        """Lazily build (and cache) builtin candidates for parse-time override."""
+        """
+        Lazily build (and cache) builtin candidates for parse-time override.
+
+        Uses the per-language ``_builtin_intents_cache`` populated by
+        ``_async_get_pool``, so we don't re-pull HA's intents_dict here.
+        """
         cached = self._builtin_overrides.get(language)
         if cached is not None:
             return cached
@@ -271,17 +274,12 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             cached = self._builtin_overrides.get(language)
             if cached is not None:
                 return cached
+            builtin_intents = self._builtin_intents_cache.get(language, {})
             builtins = await self.hass.async_add_executor_job(
-                self._build_builtin_candidates, language, resolver, user_intent_names
+                self._expand_intents, builtin_intents, resolver
             )
             self._builtin_overrides[language] = builtins
             return builtins
-
-    def _build_builtin_candidates(
-        self, language: str, resolver: Resolver, exclude: set[str]
-    ) -> list[Candidate]:
-        builtin_intents = self._gather_builtin_intents(language, exclude=exclude)
-        return self._expand_intents(builtin_intents, resolver)
 
     async def _async_get_pool(
         self, language: str
@@ -294,23 +292,186 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             cached = self._pools.get(language)
             if cached is not None:
                 return cached
-            pool = await self.hass.async_add_executor_job(self._build_pool, language)
+            (
+                ha_slot_lists,
+                ha_expansion_rules,
+                user_intents,
+                builtin_intents,
+            ) = await self._async_collect_ha_intents_data(language)
+            for k, v in (await self._async_collect_default_agent_dynamic_slot_lists()).items():
+                ha_slot_lists.setdefault(k, v)
+            pool = await self.hass.async_add_executor_job(
+                self._build_pool,
+                language,
+                ha_slot_lists,
+                ha_expansion_rules,
+                user_intents,
+                builtin_intents,
+            )
             self._pools[language] = pool
+            self._builtin_intents_cache[language] = builtin_intents
             return pool
 
-    def _build_pool(self, language: str) -> tuple[Resolver, list[Candidate], list[Candidate]]:
-        custom_docs = self._load_custom_sentences(language)
-        resolver = self._build_resolver(language, custom_docs)
+    def _find_default_agent(self):
+        get_agent = getattr(conversation, "async_get_agent", None)
+        if get_agent is None:  # pragma: no cover - test stub
+            return None
+        return get_agent(self.hass, "conversation.home_assistant")
+
+    async def _async_collect_default_agent_dynamic_slot_lists(self) -> dict[str, list[str]]:
+        """
+        Pull dynamically built ``name``/``area``/``floor`` slot lists from HA's default agent.
+
+        Those lists are declared ``wildcard: true`` in ``intents_dict``.
+        The real values are computed at recognition time normally.
+        Calling ``_make_slot_lists`` ourselves forces this.
+        """
+        out: dict[str, list[str]] = {}
+        agent = self._find_default_agent()
+        if agent is None:
+            return out
+
+        try:
+            slot_lists = await agent._make_slot_lists()
+        except Exception:
+            _LOGGER.exception("closest_intent: default agent._make_slot_lists() raised")
+            return out
+
+        for name, slot_list in (slot_lists or {}).items():
+            values = _extract_text_slot_values(slot_list)
+            if values:
+                out[name] = sorted(set(values))
+
+        if out:
+            _LOGGER.info(
+                "closest_intent: pulled %d dynamic slot list(s) from default agent: %s",
+                len(out),
+                {k: len(v) for k, v in out.items()},
+            )
+        return out
+
+    async def _async_collect_ha_intents_data(
+        self, language: str
+    ) -> tuple[
+        dict[str, list[str]],
+        dict[str, str],
+        dict[str, list[str]],
+        dict[str, list[str]],
+    ]:
+        """
+        Pull slot lists, expansion rules, and intents from HA's default agent, and
+        the ``conversation:`` YAML config block stash.
+
+        User vs builtin intents are split by name membership in the language pack.
+        """
+        slot_lists: dict[str, list[str]] = {}
+        rules: dict[str, str] = {}
+        user_intents: dict[str, list[str]] = {}
+        builtin_intents: dict[str, list[str]] = {}
+        denylist = self._denylist or set()
+
+        # (1) Stash from `conversation:` YAML block.
+        stash = self.hass.data.get(DOMAIN, {})
+        for name, raw_def in (stash.get(KEY_CONVERSATION_LISTS) or {}).items():
+            values = _parse_raw_list_values(raw_def)
+            if values:
+                slot_lists[name] = values
+        for name, body in (stash.get(KEY_CONVERSATION_EXPANSION_RULES) or {}).items():
+            if isinstance(body, str) and body:
+                rules[name] = body
+        for name, patterns in (stash.get(KEY_CONVERSATION_INTENTS) or {}).items():
+            if name in denylist:
+                continue
+            if isinstance(patterns, str):
+                user_intents[name] = [patterns]
+            elif patterns:
+                user_intents[name] = list(patterns)
+
+        # (2) HA default agent intents_dict.
+        agent = self._find_default_agent()
+        if agent is None:
+            _LOGGER.warning(
+                "closest_intent[%s]: HA default conversation agent not available; "
+                "only stash-defined vocabulary will be used",
+                language,
+            )
+            return slot_lists, rules, user_intents, builtin_intents
+
+        # Force-load the language pack so _lang_intents[language] exists.
+        await agent.async_get_or_load_intents(language)
+
+        lang_intents = agent._lang_intents.get(language)
+        if lang_intents is None:
+            _LOGGER.debug(
+                "closest_intent[%s]: default agent has no intents for this language "
+                "(available: %s)",
+                language,
+                list(agent._lang_intents.keys()),
+            )
+            return slot_lists, rules, user_intents, builtin_intents
+
+        intents_dict = lang_intents.intents_dict or {}
+        for name, body in (intents_dict.get("expansion_rules") or {}).items():
+            if isinstance(body, str) and body:
+                rules[name] = body
+        for name, raw_def in (intents_dict.get("lists") or {}).items():
+            values = _parse_raw_list_values(raw_def)
+            if values:
+                slot_lists[name] = values
+
+        builtin_names = self._builtin_intent_names(language)
+        for name, payload in (intents_dict.get("intents") or {}).items():
+            if name in denylist:
+                continue
+            sentences: list[str] = []
+            for block in payload.get("data") or []:
+                sentences.extend(block.get("sentences") or [])
+            if not sentences:
+                continue
+            if name in builtin_names:
+                builtin_intents[name] = sentences
+            else:
+                user_intents[name] = sentences
+
+        _LOGGER.info(
+            "closest_intent[%s]: vocabulary: %d slot list(s), %d expansion rule(s), "
+            "%d user / %d builtin intent(s)",
+            language,
+            len(slot_lists),
+            len(rules),
+            len(user_intents),
+            len(builtin_intents),
+        )
+        return slot_lists, rules, user_intents, builtin_intents
+
+    def _builtin_intent_names(self, language: str) -> set[str]:
+        """Names of intents defined by the language pack. Used to classify as user/builtin."""
+        try:
+            from home_assistant_intents import get_intents  # type: ignore
+        except ImportError:
+            return set()
+        try:
+            raw = get_intents(language) or {}
+        except Exception:  # pragma: no cover
+            return set()
+        return set((raw.get("intents") or {}).keys())
+
+    def _build_pool(
+        self,
+        language: str,
+        ha_slot_lists: dict[str, list[str]],
+        ha_expansion_rules: dict[str, str],
+        user_intents: dict[str, list[str]],
+        builtin_intents: dict[str, list[str]],
+    ) -> tuple[Resolver, list[Candidate], list[Candidate]]:
+        resolver = self._build_resolver(language, ha_slot_lists, ha_expansion_rules)
         resolver.match_threshold = self._threshold
         resolver.slot_resolution_threshold = self._threshold
 
-        user_intents = self._gather_user_intents(custom_docs)
         user_candidates = self._expand_intents(user_intents, resolver)
-
-        builtin_candidates: list[Candidate] = []
-        if self._include_builtins:
-            builtin_intents = self._gather_builtin_intents(language, exclude=set(user_intents))
-            builtin_candidates = self._expand_intents(builtin_intents, resolver)
+        builtin_candidates: list[Candidate] = (
+            self._expand_intents(builtin_intents, resolver) if self._include_builtins else []
+        )
 
         _LOGGER.info(
             "closest_intent[%s]: built %d user candidate(s) across %d intent(s); "
@@ -323,7 +484,11 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         )
         return (resolver, user_candidates, builtin_candidates)
 
-    def _expand_intents(self, intents: dict[str, list[str]], resolver: Resolver) -> list[Candidate]:
+    def _expand_intents(
+        self,
+        intents: dict[str, list[str]],
+        resolver: Resolver,
+    ) -> list[Candidate]:
         candidates: list[Candidate] = []
         for intent_name, patterns in intents.items():
             kept = 0
@@ -352,188 +517,20 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                         break
         return candidates
 
-    def _load_custom_sentences(self, language: str) -> list[dict]:
-        """
-        Walk ``<configDir>/custom_sentences/<language>/*.yaml`` and load each.
-
-        Files written by ``hass.voice.custom_sentences`` (or hand-placed by the user)
-        live there and contain Hassil-format ``intents`` / ``lists`` / ``expansion_rules``.
-        We merge their contents into both the resolver and the candidate pool so closest_intent
-        sees the same vocabulary HA's default agent does.
-        """
-        import os
-
-        try:
-            import yaml  # type: ignore
-        except ImportError:
-            _LOGGER.warning("PyYAML not importable; skipping custom_sentences")
-            return []
-
-        base = self.hass.config.path("custom_sentences", language)
-        if not os.path.isdir(base):
-            return []
-
-        docs: list[dict] = []
-        for fname in sorted(os.listdir(base)):
-            if not fname.endswith((".yaml", ".yml")):
-                continue
-            path = os.path.join(base, fname)
-            try:
-                with open(path, encoding="utf-8") as f:
-                    doc = yaml.safe_load(f)
-            except Exception:
-                _LOGGER.warning("closest_intent: failed to load %s", path, exc_info=True)
-                continue
-            if isinstance(doc, dict):
-                docs.append(doc)
-        return docs
-
-    def _build_resolver(self, language: str, custom_docs: list[dict]) -> Resolver:
-        """
-        Pre-compute expansion-rule expansions + slot-list values.
-
-        Two sources, merged into one ``Resolver``:
-
-        - **Hassil's static data** (``home_assistant_intents`` package):
-          Per-language expansion rules and static slot lists.
-          Sampled via ``hassil.sample`` to flatten alternations and
-          nested rules into surface forms.
-        - **HA's runtime registries**:
-          Areas, floors, and exposed entity friendly names.
-          Populated by HA's default agent at recognition time,
-          but we read the same registries directly so we can use the same vocabulary.
-        """
+    def _build_resolver(
+        self,
+        language: str,
+        ha_slot_lists: dict[str, list[str]],
+        ha_expansion_rules: dict[str, str],
+    ) -> Resolver:
+        """Build a Resolver from HA's authoritative vocabulary."""
         resolver = Resolver()
-
-        try:
-            from hassil.intents import (  # type: ignore
-                Intents,
-                RangeSlotList,
-                TextSlotList,
-            )
-            from hassil.sample import sample_expression  # type: ignore
-            from home_assistant_intents import get_intents  # type: ignore
-
-            hassil_available = True
-        except ImportError:
-            _LOGGER.debug("hassil/home_assistant_intents not importable; skipping language pack")
-            hassil_available = False
-            get_intents = None  # type: ignore
-            Intents = None  # type: ignore
-            RangeSlotList = None  # type: ignore
-            TextSlotList = None  # type: ignore
-            sample_expression = None  # type: ignore
-
-        raw = None
-        if hassil_available:
-            try:
-                raw = get_intents(language)  # type: ignore[misc]
-            except Exception:  # pragma: no cover
-                raw = None
-
-        stash = self.hass.data.get(DOMAIN, {})
-        user_lists = dict(stash.get(KEY_CONVERSATION_LISTS) or {})
-        user_rules = dict(stash.get(KEY_CONVERSATION_EXPANSION_RULES) or {})
-        for doc in custom_docs:
-            for k, v in (doc.get("lists") or {}).items():
-                user_lists[k] = v
-            for k, v in (doc.get("expansion_rules") or {}).items():
-                user_rules[k] = v
-        if user_lists or user_rules:
-            raw = dict(raw or {})
-            raw.setdefault("lists", {})
-            raw["lists"].update(user_lists)
-            raw.setdefault("expansion_rules", {})
-            raw["expansion_rules"].update(user_rules)
-            raw.setdefault("intents", {})
-            raw.setdefault("language", language)
-
-        if hassil_available and raw:
-            try:
-                intents = Intents.from_dict(raw)  # type: ignore[union-attr]
-            except Exception:  # pragma: no cover
-                _LOGGER.exception("closest_intent: failed to parse intents for %s", language)
-                intents = None
-
-            if intents is not None:
-                raw_rules = (raw or {}).get("expansion_rules") or {}
-                # Expansion rules -> list of surface forms.
-                for name, rule in (intents.expansion_rules or {}).items():
-                    try:
-                        forms = list(_dedupe(sample_expression(rule.expression, intents)))
-                    except Exception:
-                        forms = []
-                    # When we can't expand a rule, do not leave its name in as a literal string.
-                    raw_text = raw_rules.get(name)
-                    if isinstance(raw_text, str) and raw_text:
-                        needs_raw = (
-                            not forms or _SLOT_RE.search(raw_text) or _RULE_RE.search(raw_text)
-                        )
-                        if needs_raw and raw_text not in forms:
-                            forms.insert(0, raw_text)
-                    if not forms:
-                        continue
-                    # Cap rule expansion to keep alternation explosions bounded.
-                    resolver.expansion_rules[name] = forms[: max(self._expansion_cap, 32)]
-
-                # Slot lists -> list of acceptable values.
-                for name, lst in (intents.slot_lists or {}).items():
-                    values = _slot_list_values(
-                        lst, intents, sample_expression, TextSlotList, RangeSlotList
-                    )
-                    if values:
-                        resolver.slot_values[name] = values
-
-        try:
-            from homeassistant.helpers import (
-                area_registry as ar,
-            )
-            from homeassistant.helpers import (
-                entity_registry as er,
-            )
-            from homeassistant.helpers import (
-                floor_registry as fr,
-            )
-        except ImportError:
-            return resolver
-
-        try:
-            areas = ar.async_get(self.hass)
-            area_names: list[str] = []
-            for area in areas.async_list_areas():
-                area_names.append(area.name)
-                if area.aliases:
-                    area_names.extend(area.aliases)
-            if area_names:
-                resolver.slot_values["area"] = sorted(set(area_names))
-        except Exception:
-            _LOGGER.debug("closest_intent: failed to read area registry", exc_info=True)
-
-        try:
-            floors = fr.async_get(self.hass)
-            floor_names: list[str] = [f.name for f in floors.async_list_floors()]
-            if floor_names:
-                resolver.slot_values["floor"] = sorted(set(floor_names))
-        except Exception:
-            _LOGGER.debug("closest_intent: failed to read floor registry", exc_info=True)
-
-        try:
-            ent_reg = er.async_get(self.hass)
-            names: list[str] = []
-            for entity in ent_reg.entities.values():
-                if not _is_exposed(self.hass, entity.entity_id):
-                    continue
-                state = self.hass.states.get(entity.entity_id)
-                if state is not None:
-                    fname = state.attributes.get("friendly_name") or state.name
-                    if fname:
-                        names.append(fname)
-                if entity.aliases:
-                    names.extend(entity.aliases)
-            if names:
-                resolver.slot_values["name"] = sorted(set(names))
-        except Exception:
-            _LOGGER.debug("closest_intent: failed to read entity registry", exc_info=True)
+        for name, values in ha_slot_lists.items():
+            if values:
+                resolver.slot_values[name] = values
+        for name, body in ha_expansion_rules.items():
+            if body:
+                resolver.expansion_rules[name] = [body]
 
         _LOGGER.debug(
             "closest_intent[%s]: resolver has %d expansion rules, %d slot lists",
@@ -542,55 +539,6 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             len(resolver.slot_values),
         )
         return resolver
-
-    def _gather_user_intents(self, custom_docs: list[dict]) -> dict[str, list[str]]:
-        gathered: dict[str, list[str]] = {}
-
-        conv_intents = self.hass.data.get(DOMAIN, {}).get(KEY_CONVERSATION_INTENTS, {})
-        for name, patterns in conv_intents.items():
-            if isinstance(patterns, str):
-                gathered[name] = [patterns]
-            else:
-                gathered[name] = list(patterns)
-
-        for doc in custom_docs:
-            for name, payload in (doc.get("intents") or {}).items():
-                sentences: list[str] = []
-                for block in payload.get("data") or []:
-                    sentences.extend(block.get("sentences") or [])
-                if sentences:
-                    gathered.setdefault(name, []).extend(sentences)
-
-        return self._apply_denylist(gathered)
-
-    def _gather_builtin_intents(self, language: str, *, exclude: set[str]) -> dict[str, list[str]]:
-        gathered: dict[str, list[str]] = {}
-        try:
-            from home_assistant_intents import get_intents  # type: ignore
-
-            builtin = get_intents(language) or {}
-        except Exception:  # pragma: no cover
-            _LOGGER.warning(
-                "closest_intent: include_builtins=true but home_assistant_intents "
-                "is unavailable; skipping built-in patterns"
-            )
-            return gathered
-
-        for name, payload in (builtin.get("intents") or {}).items():
-            if name in exclude:
-                continue
-            sentences: list[str] = []
-            for block in payload.get("data") or []:
-                sentences.extend(block.get("sentences") or [])
-            if sentences:
-                gathered[name] = sentences
-
-        return self._apply_denylist(gathered)
-
-    def _apply_denylist(self, intents: dict[str, list[str]]) -> dict[str, list[str]]:
-        if self._denylist is None:
-            return intents
-        return {k: v for k, v in intents.items() if k not in self._denylist}
 
     async def async_process(
         self, user_input: conversation.ConversationInput
@@ -765,9 +713,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
 
         if include_builtins and not builtin_candidates:
             try:
-                builtin_candidates = await self._async_get_builtin_override(
-                    language, resolver, {c.intent for c in user_candidates}
-                )
+                builtin_candidates = await self._async_get_builtin_override(language, resolver)
             except Exception:
                 _LOGGER.exception(
                     "closest_intent.parse: builtin override build failed for %s", language
@@ -928,80 +874,62 @@ def _no_match(
     )
 
 
-def _dedupe(items: Iterable[str]) -> list[str]:
-    """Stable de-duplicate."""
-    seen: set[str] = set()
-    out: list[str] = []
-    for s in items:
-        norm = s.strip()
-        if norm and norm not in seen:
-            seen.add(norm)
-            out.append(norm)
-    return out
-
-
-def _slot_list_values(
-    lst,
-    intents,
-    sample_expression,
-    TextSlotList,
-    RangeSlotList,
-) -> list[str]:
+def _parse_raw_list_values(raw_def) -> list[str]:
     """
-    Best-effort enumeration of values from a Hassil SlotList.
+    Pull plain string values from the raw YAML form of a Hassil slot list.
 
-    - Wildcards return ``[]`` (can't enumerate).
-    - Text lists flatten each value's input pattern via ``sample_expression``.
-    - Range lists enumerate digit forms, word forms (e.g. ``"zwölf"``) are out of
-      scope here, as Hassil resolves them downstream when the canonical sentence is forwarded.
+    Handles the two enumerable shapes:
+      - ``values: [str, ..., {in: ..., out: ...}, ...]``
+      - ``range: {from: int, to: int, step: int}``
+    ``wildcard: true`` yields nothing (can't enumerate).
+    """
+    if not isinstance(raw_def, dict):
+        return []
+    values_field = raw_def.get("values")
+    if isinstance(values_field, list):
+        out: list[str] = []
+        for v in values_field:
+            if isinstance(v, str):
+                out.append(v)
+            elif isinstance(v, dict):
+                in_val = v.get("in") or v.get("out")
+                if isinstance(in_val, str):
+                    out.append(in_val)
+        if out:
+            return sorted(set(out))
+        return []
+    rng = raw_def.get("range")
+    if isinstance(rng, dict):
+        from_v = rng.get("from", 0)
+        to_v = rng.get("to", 0)
+        step = rng.get("step", 1) or 1
+        if (
+            isinstance(from_v, int)
+            and isinstance(to_v, int)
+            and isinstance(step, int)
+            and step > 0
+            and from_v <= to_v
+        ):
+            return [str(i) for i in range(from_v, to_v + 1, step)]
+    return []
+
+
+def _extract_text_slot_values(slot_list) -> list[str]:
+    """
+    Pull plain string values out of a hassil ``TextSlotList``.
+
+    Each ``TextSlotValue.text_in`` is a ``Sentence`` whose ``.text`` holds
+    the original input string. ``.value_out`` is used as a fallback for
+    values that were constructed without preserving the raw text.
     """
     values: list[str] = []
-    try:
-        if isinstance(lst, TextSlotList):
-            for v in getattr(lst, "values", []) or []:
-                expr = getattr(getattr(v, "text_in", None), "expression", None)
-                if expr is None:
-                    continue
-                try:
-                    values.extend(sample_expression(expr, intents))
-                except Exception:
-                    continue
-        elif isinstance(lst, RangeSlotList):
-            from_value = getattr(lst, "from_value", 0)
-            to_value = getattr(lst, "to_value", 0)
-            step = getattr(lst, "step", 1) or 1
-            if from_value <= to_value:
-                values.extend(str(i) for i in range(from_value, to_value + 1, step))
-    except Exception:  # pragma: no cover
-        pass
-    return _dedupe(values)
-
-
-def _is_exposed(hass: HomeAssistant, entity_id: str) -> bool:
-    """
-    Best-effort check that ``entity_id`` is voice-exposed.
-
-    Assume expose is true by default.
-    Not a security concern is unexposed, as we never call any actions or the like,
-    just forward are cleaned/matched sentence to Hassil.
-    If Hassil fucks up on this, not our fault :)
-    """
-    try:
-        from homeassistant.components.conversation import const as conv_const  # type: ignore
-
-        DOMAIN = getattr(conv_const, "DOMAIN", "conversation")
-    except Exception:
-        DOMAIN = "conversation"
-
-    try:
-        from homeassistant.helpers.entity import async_should_expose  # type: ignore
-
-        return async_should_expose(hass, DOMAIN, entity_id)
-    except Exception:
-        pass
-    try:
-        from homeassistant.helpers import exposed_entities  # type: ignore
-
-        return exposed_entities.async_should_expose(hass, DOMAIN, entity_id)
-    except Exception:
-        return True
+    for v in getattr(slot_list, "values", None) or []:
+        text_in = getattr(v, "text_in", None)
+        text = getattr(text_in, "text", None) if text_in is not None else None
+        if isinstance(text, str) and text:
+            values.append(text)
+            continue
+        value_out = getattr(v, "value_out", None)
+        if isinstance(value_out, str) and value_out:
+            values.append(value_out)
+    return values

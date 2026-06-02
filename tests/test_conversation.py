@@ -196,32 +196,12 @@ async def test_fuzzy_hit_no_slots(hass, _capture_async_converse):
 
 @pytest.mark.asyncio
 async def test_slot_extraction_and_resolution(hass, _capture_async_converse):
-    """Slot pattern matched + captured text fuzz-resolved against registry."""
-    import sys as _sys
-
-    fake_ar = _sys.modules.setdefault(
-        "homeassistant.helpers.area_registry", type(_sys)("homeassistant.helpers.area_registry")
-    )
-    fake_fr = _sys.modules.setdefault(
-        "homeassistant.helpers.floor_registry", type(_sys)("homeassistant.helpers.floor_registry")
-    )
-    fake_er = _sys.modules.setdefault(
-        "homeassistant.helpers.entity_registry", type(_sys)("homeassistant.helpers.entity_registry")
-    )
-
-    class _Area:
-        def __init__(self, name: str, aliases=None) -> None:
-            self.name = name
-            self.aliases = aliases or []
-
-    fake_ar.async_get = lambda hass: SimpleNamespace(
-        async_list_areas=lambda: [_Area("Wohnzimmer"), _Area("Büro")]
-    )
-    fake_fr.async_get = lambda hass: SimpleNamespace(async_list_floors=lambda: [])
-    fake_er.async_get = lambda hass: SimpleNamespace(entities={})
-
+    """Slot pattern matched + captured text fuzz-resolved against slot list values."""
     hass.data.setdefault(DOMAIN, {})[KEY_CONVERSATION_INTENTS] = {
         "Test_Area": ["Test zwei im {area}"],
+    }
+    hass.data[DOMAIN][KEY_CONVERSATION_LISTS] = {
+        "area": {"values": ["Wohnzimmer", "Büro"]},
     }
     agent = _make_agent(hass, threshold=70)
     await agent.async_added_to_hass()
@@ -249,25 +229,15 @@ async def test_sibling_fallback(hass, _capture_async_converse):
 
 @pytest.mark.asyncio
 async def test_registry_change_triggers_rebuild(hass, _capture_async_converse):
-    """Firing area_registry_updated invalidates pools and new areas show up."""
-    import sys as _sys
-
-    areas = [SimpleNamespace(name="Wohnzimmer", aliases=[])]
-    fake_ar = _sys.modules.setdefault(
-        "homeassistant.helpers.area_registry", type(_sys)("homeassistant.helpers.area_registry")
-    )
-    fake_fr = _sys.modules.setdefault(
-        "homeassistant.helpers.floor_registry", type(_sys)("homeassistant.helpers.floor_registry")
-    )
-    fake_er = _sys.modules.setdefault(
-        "homeassistant.helpers.entity_registry", type(_sys)("homeassistant.helpers.entity_registry")
-    )
-    fake_ar.async_get = lambda hass: SimpleNamespace(async_list_areas=lambda: list(areas))
-    fake_fr.async_get = lambda hass: SimpleNamespace(async_list_floors=lambda: [])
-    fake_er.async_get = lambda hass: SimpleNamespace(entities={})
-
+    """
+    Firing area_registry_updated invalidates the cached pool and a fresh
+    one is built from the (now-updated) slot list stash.
+    """
     hass.data.setdefault(DOMAIN, {})[KEY_CONVERSATION_INTENTS] = {
         "Test_Area": ["Test zwei im {area}"],
+    }
+    hass.data[DOMAIN][KEY_CONVERSATION_LISTS] = {
+        "area": {"values": ["Wohnzimmer"]},
     }
     agent = _make_agent(hass, threshold=70)
     await agent.async_added_to_hass()
@@ -275,7 +245,11 @@ async def test_registry_change_triggers_rebuild(hass, _capture_async_converse):
     pool = agent._pools["de"]
     assert pool[0].slot_values.get("area") == ["Wohnzimmer"]
 
-    areas.append(SimpleNamespace(name="Küche", aliases=[]))
+    # Simulate a registry change.
+    hass.data[DOMAIN][KEY_CONVERSATION_LISTS]["area"]["values"] = [
+        "Wohnzimmer",
+        "Küche",
+    ]
     hass.bus.fire("area_registry_updated", {})
     assert hass._scheduled_actions, "expected debounced rebuild to be scheduled"
     _, scheduled_action = hass._scheduled_actions.pop()
@@ -348,31 +322,11 @@ async def test_custom_sentences_loaded(hass, _capture_async_converse, tmp_path):
 @pytest.mark.asyncio
 async def test_slot_threshold_override_resolves_borderline_capture(hass, _capture_async_converse):
     """Test that lowering the slot threshold improves slot matching."""
-    import sys as _sys
-
-    fake_ar = _sys.modules.setdefault(
-        "homeassistant.helpers.area_registry", type(_sys)("homeassistant.helpers.area_registry")
-    )
-    fake_fr = _sys.modules.setdefault(
-        "homeassistant.helpers.floor_registry", type(_sys)("homeassistant.helpers.floor_registry")
-    )
-    fake_er = _sys.modules.setdefault(
-        "homeassistant.helpers.entity_registry", type(_sys)("homeassistant.helpers.entity_registry")
-    )
-
-    class _Area:
-        def __init__(self, name: str, aliases=None) -> None:
-            self.name = name
-            self.aliases = aliases or []
-
-    fake_ar.async_get = lambda hass: SimpleNamespace(
-        async_list_areas=lambda: [_Area("Wohnzimmer"), _Area("Büro")]
-    )
-    fake_fr.async_get = lambda hass: SimpleNamespace(async_list_floors=lambda: [])
-    fake_er.async_get = lambda hass: SimpleNamespace(entities={})
-
     hass.data.setdefault(DOMAIN, {})[KEY_CONVERSATION_INTENTS] = {
         "Test_Area": ["Test zwei im {area}"],
+    }
+    hass.data[DOMAIN][KEY_CONVERSATION_LISTS] = {
+        "area": {"values": ["Wohnzimmer", "Büro"]},
     }
 
     # "wozim" vs "Wohnzimmer" scores well under 70
