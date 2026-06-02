@@ -184,8 +184,6 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         self._pools: dict[str, tuple[Resolver, list[Candidate], list[Candidate]]] = {}
         self._pool_locks: dict[str, asyncio.Lock] = {}
         self._builtin_intents_cache: dict[str, dict[str, list[str]]] = {}
-        self._builtin_overrides: dict[str, list[Candidate]] = {}
-        self._builtin_override_locks: dict[str, asyncio.Lock] = {}
         self._rebuild_handle = None  # async_call_later cancel handle
         self._unsub_listeners: list = []
 
@@ -246,7 +244,6 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         self._fallback_agent_id = fallback_agent_id
         # Anything affecting candidate composition invalidates the pools.
         self._pools.clear()
-        self._builtin_overrides.clear()
         self._builtin_intents_cache.clear()
 
     @callback
@@ -261,7 +258,6 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         self._rebuild_handle = None
         languages = list(self._pools.keys())
         self._pools.clear()
-        self._builtin_overrides.clear()
         self._builtin_intents_cache.clear()
         for lang in languages:
             try:
@@ -273,25 +269,14 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         self, language: str, resolver: Resolver
     ) -> list[Candidate]:
         """
-        Lazily build (and cache) builtin candidates for parse-time override.
+        Build builtin candidates for the diagnostic parse-time override path.
 
-        Uses the per-language ``_builtin_intents_cache`` populated by
-        ``_async_get_pool``, so we don't re-pull HA's intents_dict here.
+        Reads from the per-language ``_builtin_intents_cache`` populated by ``_async_get_pool``.
         """
-        cached = self._builtin_overrides.get(language)
-        if cached is not None:
-            return cached
-        lock = self._builtin_override_locks.setdefault(language, asyncio.Lock())
-        async with lock:
-            cached = self._builtin_overrides.get(language)
-            if cached is not None:
-                return cached
-            builtin_intents = self._builtin_intents_cache.get(language, {})
-            builtins = await self.hass.async_add_executor_job(
-                self._expand_intents, builtin_intents, resolver
-            )
-            self._builtin_overrides[language] = builtins
-            return builtins
+        builtin_intents = self._builtin_intents_cache.get(language, {})
+        return await self.hass.async_add_executor_job(
+            self._expand_intents, builtin_intents, resolver
+        )
 
     async def _async_get_pool(
         self, language: str
@@ -310,8 +295,6 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 user_intents,
                 builtin_intents,
             ) = await self._async_collect_ha_intents_data(language)
-            for k, v in (await self._async_collect_default_agent_dynamic_slot_lists()).items():
-                ha_slot_lists.setdefault(k, v)
             pool = await self.hass.async_add_executor_job(
                 self._build_pool,
                 language,
@@ -329,38 +312,6 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         if get_agent is None:  # pragma: no cover - test stub
             return None
         return get_agent(self.hass, "conversation.home_assistant")
-
-    async def _async_collect_default_agent_dynamic_slot_lists(self) -> dict[str, list[str]]:
-        """
-        Pull dynamically built ``name``/``area``/``floor`` slot lists from HA's default agent.
-
-        Those lists are declared ``wildcard: true`` in ``intents_dict``.
-        The real values are computed at recognition time normally.
-        Calling ``_make_slot_lists`` ourselves forces this.
-        """
-        out: dict[str, list[str]] = {}
-        agent = self._find_default_agent()
-        if agent is None:
-            return out
-
-        try:
-            slot_lists = await agent._make_slot_lists()
-        except Exception:
-            _LOGGER.exception("default agent _make_slot_lists() raised")
-            return out
-
-        for name, slot_list in (slot_lists or {}).items():
-            values = _extract_text_slot_values(slot_list)
-            if values:
-                out[name] = sorted(set(values))
-
-        if out:
-            _LOGGER.info(
-                "pulled %d dynamic slot list(s) from default agent: %s",
-                len(out),
-                {k: len(v) for k, v in out.items()},
-            )
-        return out
 
     async def _async_collect_ha_intents_data(
         self, language: str
@@ -429,6 +380,20 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             values = _parse_raw_list_values(raw_def)
             if values:
                 slot_lists[name] = values
+
+        # Dynamic lists: declared `wildcard: true` in intents_dict, computed at recognition time.
+        # We force the build so we get the same values Hassil would see.
+        try:
+            dynamic_lists = await agent._make_slot_lists()
+        except Exception:
+            _LOGGER.exception("default agent _make_slot_lists() raised")
+            dynamic_lists = {}
+        for name, slot_list in (dynamic_lists or {}).items():
+            if name in slot_lists:
+                continue
+            values = _extract_text_slot_values(slot_list)
+            if values:
+                slot_lists[name] = sorted(set(values))
 
         builtin_names = await self.hass.async_add_executor_job(self._builtin_intent_names, language)
         for name, payload in (intents_dict.get("intents") or {}).items():

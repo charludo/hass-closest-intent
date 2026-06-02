@@ -457,15 +457,7 @@ async def test_builtin_allowlist_picks_specific_intents(hass, _capture_async_con
     async def _fake_collect(self, language):
         return ({}, {}, dict(user_intents), dict(builtin_intents))
 
-    async def _fake_dynamic(self):
-        return {}
-
     monkeypatch.setattr(ClosestIntentAgent, "_async_collect_ha_intents_data", _fake_collect)
-    monkeypatch.setattr(
-        ClosestIntentAgent,
-        "_async_collect_default_agent_dynamic_slot_lists",
-        _fake_dynamic,
-    )
 
     agent = _make_agent(
         hass,
