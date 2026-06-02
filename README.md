@@ -278,12 +278,20 @@ The result is that usually, your commands will be handled by Hassil/`closest-int
 
 Runs one sentence through the matcher and returns a structured response, including the matched intent, the candidate pattern that won, its score, the captured slots, the canonical sentence that (would have been) forwarded to Hassil.
 Optionally, you can actually forward it to Hassil to see what action this would trigger. (The action is not actually triggered though.)
+On a miss, also surfaces a sample of the `name`/`area`/`floor` slot lists so you can immediately see whether entity exposure is wired up.
+Set `debug_top_candidates: true` to additionally get the top 10 raw-scored candidates regardless of threshold to see why your intended candidate did not win.
 
 Useful when a sentence unexpectedly doesn't match, slot capture is wrong, and so on.
 
 #### `closest_intent.dump_candidates`
 
 Debug-logs and returns the full per-language state. This includes every expanded candidate, every expansion rule and its surface forms, every slot list and its values.
+
+Options:
+
+- `include_builtins: true`: also build and include built-in intent candidates in the dump, even when the integration is configured without them. Best combined with `intent_filter` to keep the output manageable.
+- `intent_filter: <substring>`: case-insensitive substring filter on intent names (e.g. `HassTurnOn`).
+- `include_exposure: true`: adds a per-entity breakdown of which states are exposed to Assist. Useful when an entity isn't showing up in `slot_values['name']`, noisy otherwise.
 
 Useful for "fuck why is this STILL not working".
 

@@ -2,6 +2,31 @@ dump_candidates:
   name: Dump candidates
   description: >-
     Log the current candidate pool, expansion rules, and slot lists for every loaded Closest Intent agent.
+  fields:
+    include_builtins:
+      name: Include built-in intents
+      description: >-
+        Also build and include HomeAssistant's built-in intent candidates in the dump.
+        Combine with `intent_filter` to keep output manageable.
+      default: false
+      selector:
+        boolean:
+    intent_filter:
+      name: Intent name filter
+      description: >-
+        Case-insensitive substring.
+      required: false
+      example: HassTurnOn
+      selector:
+        text:
+    include_exposure:
+      name: Include exposure diagnostic
+      description: >-
+        Add a per-entity breakdown of which states are exposed to Assist.
+        Useful when an entity doesn't show up in slot lists, noisy otherwise.
+      default: false
+      selector:
+        boolean:
 
 parse_sentence:
   name: Parse sentence
@@ -40,6 +65,13 @@ parse_sentence:
       description: >-
         Whether to pass the parsed/canonicalized sentence to HomeAssistant's own parser.
         Does not execute the intent/action.
+      default: false
+      selector:
+        boolean:
+    debug_top_candidates:
+      name: Include top scored candidates (debug)
+      description: >-
+        Include the top 10 raw-scored candidates in the response.
       default: false
       selector:
         boolean:

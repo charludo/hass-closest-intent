@@ -157,10 +157,23 @@ def _async_register_services(hass: HomeAssistant) -> None:
     if hass.services.has_service(DOMAIN, SERVICE_DUMP_CANDIDATES):
         return
 
+    dump_schema = vol.Schema(
+        {
+            vol.Optional("include_builtins", default=False): cv.boolean,
+            vol.Optional("intent_filter"): cv.string,
+            vol.Optional("include_exposure", default=False): cv.boolean,
+        }
+    )
+
     async def _dump(call: ServiceCall) -> ServiceResponse:
+        data = dump_schema(dict(call.data))
+        include_builtins = data["include_builtins"]
+        intent_filter = data.get("intent_filter")
+        include_exposure = data["include_exposure"]
+
         agents = hass.data.get(DOMAIN, {}).get(KEY_AGENT_INSTANCES, {})
         if not agents:
-            _LOGGER.warning("closest_intent.dump_candidates: no agent instances registered yet")
+            _LOGGER.warning("dump_candidates: no agent instances registered yet")
             return {
                 "version": VERSION,
                 "agents": {},
@@ -169,13 +182,29 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
         states: dict[str, dict] = {}
         for entry_id, agent in agents.items():
-            state = agent.dump_state()
+            builtin_overrides: dict | None = None
+            if include_builtins:
+                builtin_overrides = {}
+                for lang, (resolver, _, _) in agent._pools.items():
+                    try:
+                        builtin_overrides[lang] = await agent._async_get_builtin_override(
+                            lang, resolver
+                        )
+                    except Exception:  # pragma: no cover
+                        _LOGGER.exception(
+                            "dump_candidates[%s]: builtin override build failed",
+                            lang,
+                        )
+            state = agent.dump_state(
+                builtin_overrides=builtin_overrides,
+                intent_filter=intent_filter,
+                include_exposure=include_exposure,
+            )
             states[entry_id] = state
             # Pretty-print at DEBUG so users can paste a single block when
             # filing issues. INFO line is a one-liner pointer.
             _LOGGER.info(
-                "closest_intent.dump_candidates[%s]: %d candidate(s) across %d language(s); "
-                "see DEBUG for details",
+                "dump_candidates[%s]: %d candidate(s) across %d language(s) (full state at DEBUG)",
                 entry_id,
                 sum(
                     lang_state["user_candidate_count"] + lang_state["builtin_candidate_count"]
@@ -187,11 +216,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
                 pretty = json.dumps(state, indent=2, ensure_ascii=False)
             except Exception:  # pragma: no cover
                 pretty = repr(state)
-            _LOGGER.debug(
-                "closest_intent.dump_candidates[%s] full state:\n%s",
-                entry_id,
-                pretty,
-            )
+            _LOGGER.debug("dump_candidates[%s] full state:\n%s", entry_id, pretty)
 
         return {
             "version": VERSION,
@@ -213,6 +238,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
             vol.Optional("entry_id"): cv.string,
             vol.Optional("include_builtins", default=False): cv.boolean,
             vol.Optional("run_official", default=False): cv.boolean,
+            vol.Optional("debug_top_candidates", default=False): cv.boolean,
         }
     )
 
@@ -239,16 +265,18 @@ def _async_register_services(hass: HomeAssistant) -> None:
             data["sentence"],
             run_official=data["run_official"],
             include_builtins=data["include_builtins"],
+            debug_top_candidates=data["debug_top_candidates"],
         )
         result["entry_id"] = entry_id
         _LOGGER.info(
-            "closest_intent.parse[%s][%s] %r -> matched=%s intent=%s canonical=%r",
+            "parse[%s][%s] %r -> matched=%s intent=%s canonical=%r [%.1fms]",
             entry_id,
             language,
             data["sentence"],
             result.get("matched"),
             result.get("intent"),
             result.get("canonical"),
+            (result.get("pools") or {}).get("match_ms", 0.0),
         )
         return result
 
