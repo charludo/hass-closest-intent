@@ -134,6 +134,13 @@ class Candidate:
         return bool(self.slot_names)
 
 
+_INNER_SLOT_RE = re.compile(r"\x00slot:([a-zA-Z_][a-zA-Z0-9_]*)\x00")
+
+
+def _inner_slot_marker(slot_name: str) -> str:
+    return f"\x00slot:{slot_name}\x00"
+
+
 def expand_pattern(
     pattern: str,
     cap: int,
@@ -145,22 +152,26 @@ def expand_pattern(
     Handles ``[optional]``, ``(a|b|c)``, ``{slot}``/``{slot:capture}`` and,
     if a ``resolver`` is supplied, ``<rule>`` references (inlined into
     alternatives before ordinary expansion runs).
+    Also handles nested slot expansion only to the relevant variants.
     """
     if resolver is not None:
         pattern = resolver.inline_rules(pattern)
 
-    slot_lists: list[str] = []
-
     def _slot_sub(m: re.Match[str]) -> str:
-        slot_lists.append(m.group(1))
-        return f" {SLOT_WILDCARD} "
+        return f" {_inner_slot_marker(m.group(1))} "
 
     pat = _SLOT_RE.sub(_slot_sub, pattern)
+
+    def _finalise(v: str) -> tuple[str, str, list[str]]:
+        """Pull per-variant slot names, then rewrite markers to SLOT_WILDCARD."""
+        variant_slot_names = _INNER_SLOT_RE.findall(v)
+        v_canonical = _INNER_SLOT_RE.sub(SLOT_WILDCARD, v)
+        return _normalise(v_canonical), _normalise_keepcase(v_canonical), variant_slot_names
 
     if cap == 0:
         text = _ALT_RE.sub(lambda m: m.group(1).split("|")[0], pat)
         text = _OPT_RE.sub(lambda m: m.group(1).split("|")[0], text)
-        return [(_normalise(text), _normalise_keepcase(text), list(slot_lists))]
+        return [_finalise(text)]
 
     variants: list[str] = [pat]
     while True:
@@ -194,11 +205,11 @@ def expand_pattern(
     out = []
     seen: set[str] = set()
     for v in variants:
-        text = _normalise(v)
+        text, display_text, variant_slot_names = _finalise(v)
         if text in seen:
             continue
         seen.add(text)
-        out.append((text, _normalise_keepcase(v), list(slot_lists)))
+        out.append((text, display_text, variant_slot_names))
         if len(out) >= cap:
             break
     return out

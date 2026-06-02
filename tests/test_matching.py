@@ -81,6 +81,23 @@ def test_expand_records_slots_with_list_reference() -> None:
         assert slots == ["stunde"]
 
 
+def test_expand_per_variant_slot_names_drop_optional_slots() -> None:
+    """
+    slot_names per generated variant must reflect only the slots present
+    in that specific variant
+    """
+    out = expand_pattern("{name}[ {area}] an", cap=32)
+    bare = [(t, slots) for (t, _, slots) in out if t.count(SLOT_WILDCARD) == 1 and t.endswith("an")]
+    assert bare, f"expected a single-wildcard variant; got {[t for (t, _, _) in out]}"
+    text, slots = bare[0]
+    assert slots == ["name"], f"expected ['name'] for {text!r}, got {slots}"
+
+    with_area = [(t, slots) for (t, _, slots) in out if t.count(SLOT_WILDCARD) == 2]
+    assert with_area, "expected a two-wildcard variant"
+    _, slots_two = with_area[0]
+    assert slots_two == ["name", "area"]
+
+
 def test_expand_preserves_case_in_display_text() -> None:
     out = expand_pattern("(Spiele|Starte) WDR (Aktuell|aktuell)", cap=16)
     displays = {d for (_, d, _) in out}
