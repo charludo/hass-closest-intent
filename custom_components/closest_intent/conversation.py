@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import time
 
 from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigEntry
@@ -35,6 +37,7 @@ try:
         KEY_CONVERSATION_INTENTS,
         KEY_CONVERSATION_LISTS,
         PER_INTENT_CANDIDATE_CAP,
+        SLOT_WILDCARD,
         VERSION,
     )
     from .matching import (
@@ -66,6 +69,7 @@ except ImportError:  # pragma: no cover
         KEY_CONVERSATION_INTENTS,
         KEY_CONVERSATION_LISTS,
         PER_INTENT_CANDIDATE_CAP,
+        SLOT_WILDCARD,
         VERSION,
     )
     from matching import (  # type: ignore
@@ -255,7 +259,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             try:
                 await self._async_get_pool(lang)
             except Exception:  # pragma: no cover
-                _LOGGER.exception("closest_intent: rebuild for %s failed", lang)
+                _LOGGER.exception("[%s] pool rebuild failed", lang)
 
     async def _async_get_builtin_override(
         self, language: str, resolver: Resolver
@@ -334,7 +338,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         try:
             slot_lists = await agent._make_slot_lists()
         except Exception:
-            _LOGGER.exception("closest_intent: default agent._make_slot_lists() raised")
+            _LOGGER.exception("default agent _make_slot_lists() raised")
             return out
 
         for name, slot_list in (slot_lists or {}).items():
@@ -344,7 +348,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
 
         if out:
             _LOGGER.info(
-                "closest_intent: pulled %d dynamic slot list(s) from default agent: %s",
+                "pulled %d dynamic slot list(s) from default agent: %s",
                 len(out),
                 {k: len(v) for k, v in out.items()},
             )
@@ -391,8 +395,8 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         agent = self._find_default_agent()
         if agent is None:
             _LOGGER.warning(
-                "closest_intent[%s]: HA default conversation agent not available; "
-                "only stash-defined vocabulary will be used",
+                "[%s] HA default conversation agent not available, only stash-defined "
+                "vocabulary will be used",
                 language,
             )
             return slot_lists, rules, user_intents, builtin_intents
@@ -403,8 +407,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         lang_intents = agent._lang_intents.get(language)
         if lang_intents is None:
             _LOGGER.debug(
-                "closest_intent[%s]: default agent has no intents for this language "
-                "(available: %s)",
+                "[%s] default agent has no intents for this language (available: %s)",
                 language,
                 list(agent._lang_intents.keys()),
             )
@@ -419,7 +422,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             if values:
                 slot_lists[name] = values
 
-        builtin_names = self._builtin_intent_names(language)
+        builtin_names = await self.hass.async_add_executor_job(self._builtin_intent_names, language)
         for name, payload in (intents_dict.get("intents") or {}).items():
             if name in denylist:
                 continue
@@ -434,8 +437,8 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 user_intents[name] = sentences
 
         _LOGGER.info(
-            "closest_intent[%s]: vocabulary: %d slot list(s), %d expansion rule(s), "
-            "%d user / %d builtin intent(s)",
+            "[%s] vocabulary: %d slot list(s), %d expansion rule(s), %d user / "
+            "%d builtin intent(s)",
             language,
             len(slot_lists),
             len(rules),
@@ -474,8 +477,8 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         )
 
         _LOGGER.info(
-            "closest_intent[%s]: built %d user candidate(s) across %d intent(s); "
-            "%d builtin candidate(s) (builtins=%s)",
+            "[%s] built pool: %d user candidate(s) across %d intent(s), "
+            "%d builtin candidate(s) (include_builtins=%s)",
             language,
             len(user_candidates),
             len(user_intents),
@@ -533,12 +536,11 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             total = sum(len(forms) for _, forms in per_pattern)
             if kept < total:
                 _LOGGER.debug(
-                    "closest_intent: %s hit per-intent cap (%d) or duplicate ceiling, "
-                    "kept %d of %d generated expansions",
+                    "intent %s hit cap or duplicate ceiling: kept %d of %d expansions (cap=%d)",
                     intent_name,
-                    PER_INTENT_CANDIDATE_CAP,
                     kept,
                     total,
+                    PER_INTENT_CANDIDATE_CAP,
                 )
         return candidates
 
@@ -558,7 +560,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 resolver.expansion_rules[name] = [body]
 
         _LOGGER.debug(
-            "closest_intent[%s]: resolver has %d expansion rules, %d slot lists",
+            "[%s] resolver assembled: %d expansion rules, %d slot lists",
             language,
             len(resolver.expansion_rules),
             len(resolver.slot_values),
@@ -572,33 +574,37 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         try:
             resolver, user_candidates, builtin_candidates = await self._async_get_pool(language)
         except Exception:  # pragma: no cover
-            _LOGGER.exception("closest_intent: failed to build pool for language %s", language)
+            _LOGGER.exception("[%s] failed to build pool", language)
             resolver, user_candidates, builtin_candidates = Resolver(), [], []
 
         forwarded_text = user_input.text
+        t0 = time.perf_counter()
         try:
             detail, _ = self._match_in_pools(
                 user_input.text, resolver, user_candidates, builtin_candidates
             )
         except Exception:  # pragma: no cover
-            _LOGGER.exception("closest_intent: unexpected error matching %r", user_input.text)
+            _LOGGER.exception("match: unexpected error for %r", user_input.text)
             detail = None
+        match_ms = (time.perf_counter() - t0) * 1000.0
 
         if detail is None:
             _LOGGER.debug(
-                "closest_intent: no match for %r above %d, passthrough",
-                user_input.text,
+                "match: no candidate above threshold %d for %r, passthrough [%.1fms]",
                 self._threshold,
+                user_input.text,
+                match_ms,
             )
         else:
             candidate, captured, score_value, canonical = detail
             forwarded_text = canonical
             _LOGGER.info(
-                "closest_intent: %r -> %s (score=%d, captured=%s) -> forwarding %r to hassil",
+                "match: %r -> %s (score=%d, captured=%s) [%.1fms], forwarding %r to hassil",
                 user_input.text,
                 candidate.intent,
                 score_value,
                 captured,
+                match_ms,
                 canonical,
             )
 
@@ -613,7 +619,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 agent_id=_HASSIL_AGENT_ID,
             )
         except Exception:
-            _LOGGER.exception("closest_intent: hassil forwarding failed for %r", forwarded_text)
+            _LOGGER.exception("forward to hassil failed for %r", forwarded_text)
 
         if hassil_result is not None and not _is_error_result(hassil_result):
             return hassil_result
@@ -631,7 +637,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 agent_id=self._fallback_agent_id,
             )
         except Exception:
-            _LOGGER.exception("closest_intent: fallback agent %s failed", self._fallback_agent_id)
+            _LOGGER.exception("fallback agent %s failed", self._fallback_agent_id)
             return hassil_result if hassil_result is not None else _no_match(user_input)
 
     def _match(
@@ -718,17 +724,20 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         sentence: str,
         run_official: bool = False,
         include_builtins: bool = False,
+        debug_top_candidates: bool = False,
     ) -> dict:
         """
         Diagnostic: run the closest-intent matcher (and hassil) on ``sentence``.
 
         ``include_builtins=True`` forces builtin intents into the candidate
         pool for this call even if the integration is configured without them.
+        ``debug_top_candidates=True`` includes the top-10 raw-scored candidates
+        in the response, regardless of threshold or tie-break ordering.
         """
         try:
             resolver, user_candidates, builtin_candidates = await self._async_get_pool(language)
         except Exception:
-            _LOGGER.exception("closest_intent.parse: pool build failed for %s", language)
+            _LOGGER.exception("parse[%s]: pool build failed", language)
             return {
                 "version": VERSION,
                 "language": language,
@@ -740,22 +749,64 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             try:
                 builtin_candidates = await self._async_get_builtin_override(language, resolver)
             except Exception:
-                _LOGGER.exception(
-                    "closest_intent.parse: builtin override build failed for %s", language
-                )
+                _LOGGER.exception("parse[%s]: builtin override build failed", language)
 
+        t0 = time.perf_counter()
         detail, pool_used = self._match_in_pools(
             sentence, resolver, user_candidates, builtin_candidates
         )
+        match_ms = (time.perf_counter() - t0) * 1000.0
+
+        pools_info = {
+            "include_builtins_requested": include_builtins,
+            "user_candidate_count": len(user_candidates),
+            "builtin_candidate_count": len(builtin_candidates),
+            "match_ms": round(match_ms, 2),
+        }
+
+        top_scored: list[dict] | None = None
+        if debug_top_candidates:
+            scored_for_debug = sorted(
+                (
+                    (c, score(sentence, c.text, resolver))
+                    for c in (user_candidates + builtin_candidates)
+                ),
+                key=lambda cs: -cs[1],
+            )
+            top_scored = [
+                {
+                    "intent": c.intent,
+                    "text": c.text,
+                    "score": s,
+                    "slot_names": c.slot_names,
+                    "fixed_text_len": len(
+                        re.sub(r"\s+", " ", c.text.replace(SLOT_WILDCARD, " ")).strip()
+                    ),
+                }
+                for (c, s) in scored_for_debug[:10]
+            ]
 
         if detail is None:
+            # Surface common slot lists so the user can immediately see whether
+            # entity exposure is wired up (slot_values['name'] populated).
+            common_slot_summary = {
+                key: {
+                    "size": len(resolver.slot_values.get(key, [])),
+                    "sample": resolver.slot_values.get(key, [])[:25],
+                }
+                for key in ("name", "area", "floor")
+            }
             result: dict = {
                 "version": VERSION,
                 "language": language,
                 "input": sentence,
                 "matched": False,
                 "canonical": None,
+                "pools": pools_info,
+                "slot_lists_overview": common_slot_summary,
             }
+            if top_scored is not None:
+                result["top_scored_candidates"] = top_scored
         else:
             candidate, captured, score_value, canonical = detail
             slot_map: dict[str, str] = (
@@ -763,6 +814,19 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 if candidate.slot_names
                 else {}
             )
+            slot_resolution: dict[str, dict] = {}
+            for slot_name, raw_value in slot_map.items():
+                values = resolver.slot_values.get(slot_name) or []
+                resolved = resolver.resolve_slot(raw_value, slot_name)
+                slot_resolution[slot_name] = {
+                    "captured": raw_value,
+                    "resolved": resolved,
+                    "changed": resolved != raw_value,
+                    "list_size": len(values),
+                    "list_values_sample": values[:25],
+                    "list_truncated": len(values) > 25,
+                    "threshold": resolver.slot_resolution_threshold,
+                }
             result = {
                 "version": VERSION,
                 "language": language,
@@ -772,16 +836,20 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 "score": score_value,
                 "matched_pattern": candidate.text,
                 "captured_slots": slot_map,
+                "slot_resolution": slot_resolution,
                 "canonical": canonical,
                 "pool": pool_used,
+                "pools": pools_info,
             }
+            if top_scored is not None:
+                result["top_scored_candidates"] = top_scored
 
         if run_official:
             text_for_recognize = result["canonical"] or sentence
             try:
                 official = await self._official_recognize(language, text_for_recognize)
             except Exception as exc:
-                _LOGGER.exception("closest_intent.parse: official recognize blew up")
+                _LOGGER.exception("parse: official recognize raised")
                 official = {
                     "available": False,
                     "reason": f"could not connect to hassil ({type(exc).__name__}: {exc})",
@@ -838,7 +906,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         try:
             outcome = await debug(user_input)
         except Exception as exc:
-            _LOGGER.exception("closest_intent.parse: default agent debug recognize raised")
+            _LOGGER.exception("parse: default agent debug recognize raised")
             return {"available": True, "input": text, "matched": False, "error": str(exc)}
 
         if outcome is None:
@@ -846,8 +914,52 @@ class ClosestIntentAgent(conversation.ConversationEntity):
 
         return {"available": True, "input": text, **outcome}
 
-    def dump_state(self) -> dict:
+    def _exposure_diagnostic(self) -> dict:
+        """Per-state exposure check, so users can see why slot_values['name']
+        ends up empty even when entities look exposed in the UI."""
+        try:
+            states = list(self.hass.states.async_all())
+        except Exception:
+            return {"error": "hass.states.async_all() raised"}
+
+        api_path = _EXPOSE_API_PATH
+
+        exposed: list[dict] = []
+        not_exposed: list[dict] = []
+        for state in states:
+            entry = {
+                "entity_id": state.entity_id,
+                "friendly_name": state.attributes.get("friendly_name") or state.name,
+            }
+            try:
+                ok = _is_exposed(self.hass, state.entity_id)
+            except Exception as exc:
+                entry["error"] = repr(exc)
+                not_exposed.append(entry)
+                continue
+            (exposed if ok else not_exposed).append(entry)
+
+        return {
+            "exposure_api_used": api_path or "<none found, defaulting to expose-all>",
+            "total_states": len(states),
+            "exposed_count": len(exposed),
+            "not_exposed_count": len(not_exposed),
+            "exposed_sample": exposed[:25],
+            "not_exposed_sample": not_exposed[:25],
+        }
+
+    def dump_state(
+        self,
+        builtin_overrides: dict[str, list[Candidate]] | None = None,
+        intent_filter: str | None = None,
+        include_exposure: bool = False,
+    ) -> dict:
         """Return a plain-data snapshot of pools for the diagnostic service."""
+        needle = intent_filter.lower() if intent_filter else None
+
+        def _keep(intent_name: str) -> bool:
+            return needle is None or needle in intent_name.lower()
+
         out: dict = {
             "version": VERSION,
             "entry_id": self._entry_id,
@@ -861,16 +973,26 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             "denylist": sorted(self._denylist) if self._denylist else None,
             "languages": {},
         }
+        if intent_filter is not None:
+            out["intent_filter"] = intent_filter
+        if include_exposure:
+            out["exposure"] = self._exposure_diagnostic()
         for lang, (resolver, user_candidates, builtin_candidates) in self._pools.items():
+            effective_builtins = builtin_overrides.get(lang) if builtin_overrides else None
+            if effective_builtins is None:
+                effective_builtins = builtin_candidates
+
             user_by_intent: dict[str, list[str]] = {}
             for c in user_candidates:
-                user_by_intent.setdefault(c.intent, []).append(c.text)
+                if _keep(c.intent):
+                    user_by_intent.setdefault(c.intent, []).append(c.text)
             builtin_by_intent: dict[str, list[str]] = {}
-            for c in builtin_candidates:
-                builtin_by_intent.setdefault(c.intent, []).append(c.text)
+            for c in effective_builtins:
+                if _keep(c.intent):
+                    builtin_by_intent.setdefault(c.intent, []).append(c.text)
             out["languages"][lang] = {
                 "user_candidate_count": len(user_candidates),
-                "builtin_candidate_count": len(builtin_candidates),
+                "builtin_candidate_count": len(effective_builtins),
                 "user_intents": user_by_intent,
                 "builtin_intents": builtin_by_intent,
                 "expansion_rules": {k: v for k, v in resolver.expansion_rules.items()},
@@ -958,3 +1080,23 @@ def _extract_text_slot_values(slot_list) -> list[str]:
         if isinstance(value_out, str) and value_out:
             values.append(value_out)
     return values
+
+
+_EXPOSE_ASSISTANT = "conversation"
+_EXPOSE_API_PATH: str | None
+try:
+    from homeassistant.components.homeassistant.exposed_entities import (  # type: ignore
+        async_should_expose as _async_should_expose,
+    )
+
+    _EXPOSE_API_PATH = "homeassistant.components.homeassistant.exposed_entities"
+except ImportError:  # pragma: no cover -- only hit by the test stub
+    _async_should_expose = None  # type: ignore[assignment]
+    _EXPOSE_API_PATH = None
+
+
+def _is_exposed(hass: HomeAssistant, entity_id: str) -> bool:
+    """Check whether ``entity_id`` is voice-exposed to the conversation assistant."""
+    if _async_should_expose is None:
+        return True
+    return bool(_async_should_expose(hass, _EXPOSE_ASSISTANT, entity_id))
