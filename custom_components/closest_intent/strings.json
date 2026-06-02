@@ -1,4 +1,67 @@
 {
+  "config": {
+    "step": {
+      "user": {
+        "title": "Closest Intent",
+        "description": "Fuzzy intent matcher. Garbled STT output in, actual intent out. Defaults are sensible -- start with them and tune later via the options.",
+        "data": {
+          "threshold": "Match threshold",
+          "slot_threshold": "Slot match threshold",
+          "expansion_cap": "Pattern expansion cap",
+          "denylist": "Intent denylist",
+          "slot_extraction": "Extract slot values",
+          "include_builtins": "Include built-in intents",
+          "builtin_allowlist": "Built-in intent allowlist",
+          "fallback_agent": "Fallback conversation agent",
+          "startup_self_check": "Startup self-check"
+        },
+        "data_description": {
+          "threshold": "Minimum fuzzy-match score (0-100). Higher = stricter. Below this, the original text is forwarded unchanged to the fallback agent.",
+          "slot_threshold": "Minimum score for resolving a captured slot value against its known list. Lower if entity names are frequently misunderstood.",
+          "expansion_cap": "Maximum number of surface forms generated per pattern. Bounds the alternation/optional explosion. 0 disables expansion entirely.",
+          "denylist": "Intent names to exclude from matching. Useful when a built-in or imported intent collides with your own.",
+          "slot_extraction": "Substitute extracted slot values into the canonical sentence forwarded to Hassil. Turn off to only correct slot-less phrases.",
+          "include_builtins": "Also fuzzy-match against Home Assistant's built-in intents (HassTurnOn etc.). Off by default; prefer the allowlist below.",
+          "builtin_allowlist": "Specific built-in intent names to always consider, even when the include-builtins toggle above is off.",
+          "fallback_agent": "Agent consulted only if no intent matches and Hassil also fails. Default is Hassil itself (i.e. no fallback). Set to an LLM agent if you want one.",
+          "startup_self_check": "On startup, verify that each custom intent's perfect-input still routes to itself. Raises a repair issue if clashes are found. Recommended on."
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Closest Intent is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Closest Intent options",
+        "description": "Changes apply immediately -- no restart needed.",
+        "data": {
+          "threshold": "Match threshold",
+          "slot_threshold": "Slot match threshold",
+          "expansion_cap": "Pattern expansion cap",
+          "denylist": "Intent denylist",
+          "slot_extraction": "Extract slot values",
+          "include_builtins": "Include built-in intents",
+          "builtin_allowlist": "Built-in intent allowlist",
+          "fallback_agent": "Fallback conversation agent",
+          "startup_self_check": "Startup self-check"
+        },
+        "data_description": {
+          "threshold": "Minimum fuzzy-match score (0-100). Higher = stricter. Below this, the original text is forwarded unchanged to the fallback agent.",
+          "slot_threshold": "Minimum score for resolving a captured slot value against its known list. Lower if entity names are frequently misunderstood.",
+          "expansion_cap": "Maximum number of surface forms generated per pattern. Bounds the alternation/optional explosion. 0 disables expansion entirely.",
+          "denylist": "Intent names to exclude from matching. Useful when a built-in or imported intent collides with your own.",
+          "slot_extraction": "Substitute extracted slot values into the canonical sentence forwarded to Hassil. Turn off to only correct slot-less phrases.",
+          "include_builtins": "Also fuzzy-match against Home Assistant's built-in intents (HassTurnOn etc.). Off by default; prefer the allowlist below.",
+          "builtin_allowlist": "Specific built-in intent names to always consider, even when the include-builtins toggle above is off.",
+          "fallback_agent": "Agent consulted only if no intent matches and Hassil also fails. Default is Hassil itself (i.e. no fallback). Set to an LLM agent if you want one.",
+          "startup_self_check": "On startup, verify that each custom intent's perfect-input still routes to itself. Raises a repair issue if clashes are found. Recommended on."
+        }
+      }
+    }
+  },
   "issues": {
     "self_check_clashes": {
       "title": "Closest Intent: {count} clashing custom intent(s)",
