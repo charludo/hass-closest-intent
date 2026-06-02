@@ -196,6 +196,53 @@ def test_extract_slots_prefers_word_boundary_over_substring_match() -> None:
     assert out == ["licht"]
 
 
+def test_score_no_slot_handles_split_token() -> None:
+    """
+    Regression: ``token_sort_ratio`` collapses ``"zufalls wiedergabe aus"``
+    against ``"zufallswiedergabe aus"`` to ~65 because the split token
+    sorts to a different position than the merged token.
+    """
+    assert score("zufalls wiedergabe aus", "zufallswiedergabe aus") >= 90
+
+
+def test_find_best_prefers_no_slot_over_catchall_when_tied() -> None:
+    """
+    A literal no-slot intent must win over a catch-all ``{slot} suffix``
+    candidate when both score essentially the same.
+    """
+    cands = [
+        Candidate(intent="ShuffleOff", pattern_idx=0, text="zufallswiedergabe aus"),
+        Candidate(
+            intent="DeviceOff",
+            pattern_idx=0,
+            text=f"{SLOT_WILDCARD} aus",
+            slot_names=["geraet"],
+        ),
+    ]
+    res = find_best("zufalls wiedergabe aus", cands, Resolver(match_threshold=70))
+    assert res is not None
+    assert res[0].intent == "ShuffleOff"
+
+
+def test_find_best_keeps_slotted_intent_when_clearly_higher() -> None:
+    """
+    The cross-slot tiebreak must NOT demote a slotted intent that scores
+    meaningfully higher than a no-slot sibling.
+    """
+    cands = [
+        Candidate(intent="WetterMorgen", pattern_idx=0, text="wie wird das wetter morgen"),
+        Candidate(
+            intent="WetterStunde",
+            pattern_idx=0,
+            text=f"wie wird das wetter um {SLOT_WILDCARD} uhr",
+            slot_names=["hours"],
+        ),
+    ]
+    res = find_best("wie wird das wetter um 14 uhr", cands, Resolver(match_threshold=70))
+    assert res is not None
+    assert res[0].intent == "WetterStunde"
+
+
 def test_find_best_picks_highest() -> None:
     cands = [
         Candidate(intent="A", pattern_idx=0, text="schalte das licht an"),

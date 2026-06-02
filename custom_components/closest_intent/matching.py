@@ -373,10 +373,13 @@ def score(user_text: str, candidate_text: str, resolver: Resolver | None = None)
         penalty += _slot_proportion_penalty(cand_stripped, user_norm, len(parts) - 1)
         return max(0, base - penalty)
 
-    return int(fuzz.token_sort_ratio(user_norm, cand_stripped, score_cutoff=threshold))
+    ts = int(fuzz.token_sort_ratio(user_norm, cand_stripped))
+    r = int(fuzz.ratio(user_norm, cand_stripped))
+    return max(ts, r)
 
 
 _FIND_BEST_TIEBREAK_BAND = 15
+_FIND_BEST_SLOT_COUNT_TIEBREAK_BAND = 5
 
 
 def _fixed_text_length(candidate_text: str) -> int:
@@ -385,20 +388,23 @@ def _fixed_text_length(candidate_text: str) -> int:
     return len(re.sub(r"\s+", " ", stripped).strip())
 
 
+def _slot_count(candidate_text: str) -> int:
+    return candidate_text.count(SLOT_WILDCARD)
+
+
 def find_best(
     user_text: str, candidates: Iterable[Candidate], resolver: Resolver
 ) -> tuple[Candidate, int] | None:
     """
     Find the best candidate above ``threshold``.
 
-    First, find highest-scoring candidate.
-    Then, among the top performing ones, find the one with the shortest slot-text.
-    Tie-break rejects siblings whose slot at a leading/trailing
-    boundary absorbs material a more-anchored sibling would treat as
-    a fixed prefix/suffix, e.g. ``put {item} on the shopping list`` over the bare
-    ``{item} on the shopping list`` when the user actually said 'put'.
-    ``partial_ratio`` would happily scores the bare one at 100
-    because its fixed tail is a substring.
+    - First, find highest-scoring candidate.
+    - Then, among the top performing ones (within ``_FIND_BEST_TIEBREAK_BAND`` of the top score),
+      prefer fewer slots, then longer fixed text, then higher score.
+      Tie-break rejects siblings whose slot at a leading or trailing boundary absorbs material
+      a more-anchored sibling would treat as a fixed prefix/suffix, e.g.
+      ``put {item} on the shopping list`` over the bare ``{item} on the shopping list``
+      when the user actually said 'put'.
     """
     threshold = resolver.match_threshold
     scored: list[tuple[Candidate, int]] = []
@@ -412,6 +418,19 @@ def find_best(
 
     scored.sort(key=lambda cs: -cs[1])
     top_score = scored[0][1]
+
+    tight_floor = top_score - _FIND_BEST_SLOT_COUNT_TIEBREAK_BAND
+    tight = [cs for cs in scored if cs[1] >= tight_floor]
+    if len(tight) > 1 and len({_slot_count(c.text) for (c, _) in tight}) > 1:
+        tight.sort(
+            key=lambda cs: (
+                _slot_count(cs[0].text),
+                -_fixed_text_length(cs[0].text),
+                -cs[1],
+            )
+        )
+        return tight[0]
+
     band_floor = top_score - _FIND_BEST_TIEBREAK_BAND
     contenders = [cs for cs in scored if cs[1] >= band_floor]
     if len(contenders) == 1:
