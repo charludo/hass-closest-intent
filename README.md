@@ -227,6 +227,7 @@ The integration can be set up entirely in the UI (**Settings** -> **Devices & se
 | `expansion_cap` | `16` | Maximum number of surface forms generated per pattern. Bounds the alternation/optional explosion. `0` disables expansion entirely (first branch only). |
 | `denylist` | `[]` | Intent names to exclude from matching. Useful when a built-in or imported intent collides with your own. |
 | `include_builtins` | `false` | Also fuzzy-match against HomeAssistant's built-in intents (`HassTurnOn` etc.). Off by default, see section on limitations. |
+| `builtin_allowlist` | `[]` | A list of builtin intents to include for matching, even if `include_builtins` is off. Highly recommended over `include_builtins`. Allows you to e.g. enable `HassTurnOn` separately. |
 | `slot_extraction` | `true` | Extract slot values from the user's speech and substitute them into the canonical sentence. Disable to make the integration only correct slot-less phrases. (Why would you do this though, this is the best part!)|
 | `fallback_agent` | `conversation.home_assistant` | Agent consulted if no match for the canonical sentence is found. Default is Hassil itself, i.e. "no fallback". Set to an LLM agent if you want one. |
 
@@ -239,6 +240,7 @@ closest_intent:
   expansion_cap: 16
   denylist: []
   include_builtins: false
+  builtin_allowlist: []
   slot_extraction: true
   fallback_agent: conversation.home_assistant
 ```

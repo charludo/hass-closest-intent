@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, Supp
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
+    CONF_BUILTIN_ALLOWLIST,
     CONF_DENYLIST,
     CONF_EXPANSION_CAP,
     CONF_FALLBACK_AGENT,
@@ -57,6 +58,7 @@ CONFIG_SCHEMA = vol.Schema(
                 # Also fuzzy-match HA's built-in intent patterns (HassTurnOn etc.)
                 # loaded from `home_assistant_intents`.
                 vol.Optional(CONF_INCLUDE_BUILTINS, default=DEFAULT_INCLUDE_BUILTINS): cv.boolean,
+                vol.Optional(CONF_BUILTIN_ALLOWLIST, default=None): vol.Any(None, [cv.string]),
                 vol.Optional(CONF_SLOT_EXTRACTION, default=DEFAULT_SLOT_EXTRACTION): cv.boolean,
                 # Conversation entity to forward the canonical sentence to after a fuzzy match.
                 # Default is HA's bundled agent.

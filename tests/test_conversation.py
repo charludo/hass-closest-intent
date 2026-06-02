@@ -117,6 +117,7 @@ def _make_agent(
     expansion_cap: int = 16,
     denylist=None,
     include_builtins: bool = False,
+    builtin_allowlist=None,
     slot_extraction: bool = True,
     fallback_agent_id: str = "conversation.home_assistant",
 ) -> ClosestIntentAgent:
@@ -127,6 +128,7 @@ def _make_agent(
         expansion_cap=expansion_cap,
         denylist=denylist,
         include_builtins=include_builtins,
+        builtin_allowlist=builtin_allowlist,
         slot_extraction=slot_extraction,
         fallback_agent_id=fallback_agent_id,
         entry_id="TESTENTRY",
@@ -342,12 +344,52 @@ async def test_slot_threshold_override_resolves_borderline_capture(hass, _captur
         expansion_cap=16,
         denylist=None,
         include_builtins=False,
+        builtin_allowlist=None,
         slot_extraction=True,
         fallback_agent_id="conversation.home_assistant",
     )
 
     await agent.async_process(_conversation_input("test zwei im wozim"))
     assert _capture_async_converse["text"] == "Test zwei im Wohnzimmer"
+
+
+@pytest.mark.asyncio
+async def test_builtin_allowlist_picks_specific_intents(hass, _capture_async_converse, monkeypatch):
+    """
+    With include_builtins=False but a non-empty builtin_allowlist, only the
+    named builtin intents enter the candidate pool.
+    """
+    user_intents = {"UserPump": ["pumpe an"]}
+    builtin_intents = {
+        "HassTurnOn": ["turn on {name}"],
+        "HassGetWeather": ["how is the weather"],
+        "HassSomethingElse": ["activate scene {name}"],
+    }
+
+    async def _fake_collect(self, language):
+        return ({}, {}, dict(user_intents), dict(builtin_intents))
+
+    async def _fake_dynamic(self):
+        return {}
+
+    monkeypatch.setattr(ClosestIntentAgent, "_async_collect_ha_intents_data", _fake_collect)
+    monkeypatch.setattr(
+        ClosestIntentAgent,
+        "_async_collect_default_agent_dynamic_slot_lists",
+        _fake_dynamic,
+    )
+
+    agent = _make_agent(
+        hass,
+        threshold=70,
+        include_builtins=False,
+        builtin_allowlist=["HassTurnOn", "HassGetWeather"],
+    )
+    await agent.async_added_to_hass()
+
+    _, _, builtin_candidates = agent._pools["de"]
+    seen_intents = {c.intent for c in builtin_candidates}
+    assert seen_intents == {"HassTurnOn", "HassGetWeather"}
 
 
 @pytest.mark.asyncio
@@ -366,6 +408,7 @@ async def test_apply_options_clears_pools(hass, _capture_async_converse):
         expansion_cap=16,
         denylist=None,
         include_builtins=False,
+        builtin_allowlist=None,
         slot_extraction=True,
         fallback_agent_id="conversation.home_assistant",
     )
