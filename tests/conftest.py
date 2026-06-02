@@ -46,6 +46,30 @@ ha_helpers_event = _ensure_module("homeassistant.helpers.event")
 ha_helpers_typing = _ensure_module("homeassistant.helpers.typing")
 ha_helpers_cv = _ensure_module("homeassistant.helpers.config_validation")
 ha_helpers_selector = _ensure_module("homeassistant.helpers.selector")
+ha_helpers_issue_registry = _ensure_module("homeassistant.helpers.issue_registry")
+
+
+class _IssueSeverity:
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
+
+
+_issue_registry_state: dict[tuple, dict] = {}
+
+
+def _issue_create(hass, domain, issue_id, **kwargs):
+    _issue_registry_state[(domain, issue_id)] = kwargs
+
+
+def _issue_delete(hass, domain, issue_id):
+    _issue_registry_state.pop((domain, issue_id), None)
+
+
+ha_helpers_issue_registry.IssueSeverity = _IssueSeverity
+ha_helpers_issue_registry.async_create_issue = _issue_create
+ha_helpers_issue_registry.async_delete_issue = _issue_delete
+ha_helpers_issue_registry._state = _issue_registry_state
 
 _ensure_module("homeassistant.helpers.area_registry").async_get = lambda hass: (
     types.SimpleNamespace(async_list_areas=lambda: [])

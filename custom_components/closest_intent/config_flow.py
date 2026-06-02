@@ -21,11 +21,13 @@ from .const import (
     CONF_INCLUDE_BUILTINS,
     CONF_SLOT_EXTRACTION,
     CONF_SLOT_THRESHOLD,
+    CONF_STARTUP_SELF_CHECK,
     CONF_THRESHOLD,
     DEFAULT_EXPANSION_CAP,
     DEFAULT_FALLBACK_AGENT,
     DEFAULT_INCLUDE_BUILTINS,
     DEFAULT_SLOT_EXTRACTION,
+    DEFAULT_STARTUP_SELF_CHECK,
     DEFAULT_THRESHOLD,
     DOMAIN,
     KEY_CONVERSATION_INTENTS,
@@ -120,6 +122,14 @@ def _build_schema(
                 CONF_SLOT_EXTRACTION,
                 default=defaults.get(CONF_SLOT_EXTRACTION, DEFAULT_SLOT_EXTRACTION),
                 description="Extract slot values from user speech",
+            ): selector.BooleanSelector(),
+            vol.Required(
+                CONF_STARTUP_SELF_CHECK,
+                default=defaults.get(CONF_STARTUP_SELF_CHECK, DEFAULT_STARTUP_SELF_CHECK),
+                description=(
+                    "On startup, verify that each custom intent's own patterns still "
+                    "select that intent. Raises a repair issue if clashes are found."
+                ),
             ): selector.BooleanSelector(),
             vol.Required(
                 CONF_INCLUDE_BUILTINS,

@@ -22,11 +22,13 @@ from .const import (
     CONF_INCLUDE_BUILTINS,
     CONF_SLOT_EXTRACTION,
     CONF_SLOT_THRESHOLD,
+    CONF_STARTUP_SELF_CHECK,
     CONF_THRESHOLD,
     DEFAULT_EXPANSION_CAP,
     DEFAULT_FALLBACK_AGENT,
     DEFAULT_INCLUDE_BUILTINS,
     DEFAULT_SLOT_EXTRACTION,
+    DEFAULT_STARTUP_SELF_CHECK,
     DEFAULT_THRESHOLD,
     DOMAIN,
     KEY_AGENT_INSTANCES,
@@ -60,6 +62,9 @@ CONFIG_SCHEMA = vol.Schema(
                 vol.Optional(CONF_INCLUDE_BUILTINS, default=DEFAULT_INCLUDE_BUILTINS): cv.boolean,
                 vol.Optional(CONF_BUILTIN_ALLOWLIST, default=None): vol.Any(None, [cv.string]),
                 vol.Optional(CONF_SLOT_EXTRACTION, default=DEFAULT_SLOT_EXTRACTION): cv.boolean,
+                vol.Optional(
+                    CONF_STARTUP_SELF_CHECK, default=DEFAULT_STARTUP_SELF_CHECK
+                ): cv.boolean,
                 # Conversation entity to forward the canonical sentence to after a fuzzy match.
                 # Default is HA's bundled agent.
                 vol.Optional(CONF_FALLBACK_AGENT, default=DEFAULT_FALLBACK_AGENT): cv.string,
