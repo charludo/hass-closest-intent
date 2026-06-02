@@ -19,6 +19,7 @@ from homeassistant.helpers.event import async_call_later
 # Importable both as part of the package and as a standalone module for tests.
 try:
     from .const import (
+        CONF_BUILTIN_ALLOWLIST,
         CONF_DENYLIST,
         CONF_EXPANSION_CAP,
         CONF_FALLBACK_AGENT,
@@ -51,6 +52,7 @@ try:
     )
 except ImportError:  # pragma: no cover
     from const import (  # type: ignore
+        CONF_BUILTIN_ALLOWLIST,
         CONF_DENYLIST,
         CONF_EXPANSION_CAP,
         CONF_FALLBACK_AGENT,
@@ -107,6 +109,7 @@ async def async_setup_entry(
         expansion_cap=opt(CONF_EXPANSION_CAP, DEFAULT_EXPANSION_CAP),
         denylist=opt(CONF_DENYLIST, None),
         include_builtins=opt(CONF_INCLUDE_BUILTINS, DEFAULT_INCLUDE_BUILTINS),
+        builtin_allowlist=opt(CONF_BUILTIN_ALLOWLIST, None),
         slot_extraction=opt(CONF_SLOT_EXTRACTION, DEFAULT_SLOT_EXTRACTION),
         fallback_agent_id=opt(CONF_FALLBACK_AGENT, DEFAULT_FALLBACK_AGENT),
         entry_id=entry.entry_id,
@@ -136,6 +139,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
         expansion_cap=opt(CONF_EXPANSION_CAP, DEFAULT_EXPANSION_CAP),
         denylist=opt(CONF_DENYLIST, None),
         include_builtins=opt(CONF_INCLUDE_BUILTINS, DEFAULT_INCLUDE_BUILTINS),
+        builtin_allowlist=opt(CONF_BUILTIN_ALLOWLIST, None),
         slot_extraction=opt(CONF_SLOT_EXTRACTION, DEFAULT_SLOT_EXTRACTION),
         fallback_agent_id=opt(CONF_FALLBACK_AGENT, DEFAULT_FALLBACK_AGENT),
     )
@@ -155,6 +159,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         expansion_cap: int,
         denylist: list[str] | None,
         include_builtins: bool,
+        builtin_allowlist: list[str] | None,
         slot_extraction: bool,
         fallback_agent_id: str,
         entry_id: str,
@@ -165,6 +170,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         self._expansion_cap = expansion_cap
         self._denylist = set(denylist) if denylist else None
         self._include_builtins = include_builtins
+        self._builtin_allowlist = set(builtin_allowlist) if builtin_allowlist else None
         self._slot_extraction = slot_extraction
         self._fallback_agent_id = fallback_agent_id
         self._entry_id = entry_id
@@ -226,6 +232,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         expansion_cap: int,
         denylist: list[str] | None,
         include_builtins: bool,
+        builtin_allowlist: list[str] | None,
         slot_extraction: bool,
         fallback_agent_id: str,
     ) -> None:
@@ -234,6 +241,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         self._expansion_cap = expansion_cap
         self._denylist = set(denylist) if denylist else None
         self._include_builtins = include_builtins
+        self._builtin_allowlist = set(builtin_allowlist) if builtin_allowlist else None
         self._slot_extraction = slot_extraction
         self._fallback_agent_id = fallback_agent_id
         # Anything affecting candidate composition invalidates the pools.
@@ -472,18 +480,27 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         resolver.slot_resolution_threshold = self._threshold
 
         user_candidates = self._expand_intents(user_intents, resolver)
-        builtin_candidates: list[Candidate] = (
-            self._expand_intents(builtin_intents, resolver) if self._include_builtins else []
-        )
+        if self._include_builtins:
+            selected_builtins = builtin_intents
+        elif self._builtin_allowlist:
+            selected_builtins = {
+                name: patterns
+                for name, patterns in builtin_intents.items()
+                if name in self._builtin_allowlist
+            }
+        else:
+            selected_builtins = {}
+        builtin_candidates: list[Candidate] = self._expand_intents(selected_builtins, resolver)
 
         _LOGGER.info(
             "[%s] built pool: %d user candidate(s) across %d intent(s), "
-            "%d builtin candidate(s) (include_builtins=%s)",
+            "%d builtin candidate(s) (include_builtins=%s, allowlist=%s)",
             language,
             len(user_candidates),
             len(user_intents),
             len(builtin_candidates),
             self._include_builtins,
+            sorted(self._builtin_allowlist) if self._builtin_allowlist else None,
         )
         return (resolver, user_candidates, builtin_candidates)
 
@@ -968,6 +985,9 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             "effective_slot_threshold": self._effective_slot_threshold,
             "expansion_cap": self._expansion_cap,
             "include_builtins": self._include_builtins,
+            "builtin_allowlist": sorted(self._builtin_allowlist)
+            if self._builtin_allowlist
+            else None,
             "slot_extraction": self._slot_extraction,
             "fallback_agent_id": self._fallback_agent_id,
             "denylist": sorted(self._denylist) if self._denylist else None,

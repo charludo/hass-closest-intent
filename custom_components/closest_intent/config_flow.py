@@ -14,6 +14,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_BUILTIN_ALLOWLIST,
     CONF_DENYLIST,
     CONF_EXPANSION_CAP,
     CONF_FALLBACK_AGENT,
@@ -128,6 +129,21 @@ def _build_schema(
                     "(HassTurnOn etc.). Not recommended"
                 ),
             ): selector.BooleanSelector(),
+            vol.Optional(
+                CONF_BUILTIN_ALLOWLIST,
+                default=defaults.get(CONF_BUILTIN_ALLOWLIST) or [],
+                description=(
+                    "Specific built-in intent names to always consider, even when "
+                    "the include-builtins toggle above is off."
+                ),
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[],
+                    multiple=True,
+                    custom_value=True,
+                    mode=selector.SelectSelectorMode.LIST,
+                )
+            ),
             vol.Required(
                 CONF_FALLBACK_AGENT,
                 default=fallback_agent_default,
@@ -151,6 +167,9 @@ def _normalise(user_input: dict[str, Any]) -> dict[str, Any]:
     deny = out.get(CONF_DENYLIST)
     if not deny:
         out[CONF_DENYLIST] = None
+    allow = out.get(CONF_BUILTIN_ALLOWLIST)
+    if not allow:
+        out[CONF_BUILTIN_ALLOWLIST] = None
     return out
 
 

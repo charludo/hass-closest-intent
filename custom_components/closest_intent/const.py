@@ -24,6 +24,7 @@ CONF_SLOT_THRESHOLD = "slot_threshold"
 CONF_EXPANSION_CAP = "expansion_cap"
 CONF_DENYLIST = "denylist"
 CONF_INCLUDE_BUILTINS = "include_builtins"
+CONF_BUILTIN_ALLOWLIST = "builtin_allowlist"
 CONF_SLOT_EXTRACTION = "slot_extraction"
 CONF_FALLBACK_AGENT = "fallback_agent"
 
