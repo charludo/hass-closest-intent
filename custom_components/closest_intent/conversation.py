@@ -1194,8 +1194,8 @@ def _format_clashes(clashes: list[dict]) -> str:
                 lines.append(f"- `{c['pattern']}` matched nothing above threshold")
             else:
                 lines.append(
-                    f"- {c['pattern']}` is matched as `{c['got_pattern']}`"
-                    f"`from `{c['got_intent']}` (score {c['score']})"
+                    f"- `{c['pattern']}` is matched as `{c['got_pattern']}`"
+                    f"from `{c['got_intent']}` (score {c['score']})"
                 )
         sections.append("\n".join(lines))
 
