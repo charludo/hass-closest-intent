@@ -199,10 +199,15 @@ class ClosestIntentAgent(conversation.ConversationEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        # Pre-warm with HA's configured default language so first user
-        # utterance doesn't pay the build cost.
         default_lang = self.hass.config.language or "en"
-        await self._async_get_pool(default_lang)
+        create_bg_task = getattr(self.hass, "async_create_background_task", None)
+        if create_bg_task is not None:
+            create_bg_task(
+                self._async_get_pool(default_lang),
+                name=f"closest_intent.prewarm[{default_lang}]",
+            )
+        else:  # pragma: no cover - older HA / tests
+            self.hass.async_create_task(self._async_get_pool(default_lang))
 
         bus = self.hass.bus
         for event_name in (
