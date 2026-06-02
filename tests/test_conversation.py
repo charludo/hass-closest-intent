@@ -498,6 +498,214 @@ async def test_apply_options_clears_pools(hass, _capture_async_converse):
     assert agent._pools == {}
 
 
+@pytest.fixture
+def _issue_registry_state():
+    """Reset and expose the conftest issue-registry stub state."""
+    from homeassistant.helpers import issue_registry as ir  # type: ignore
+
+    ir._state.clear()
+    yield ir._state
+    ir._state.clear()
+
+
+def _find_self_check_issue(state, lang: str = "de", entry_id: str = "TESTENTRY"):
+    """Locate the current self-check issue for ``lang``, regardless of count suffix."""
+    prefix = f"self_check_{entry_id}_{lang}_"
+    for (domain, issue_id), payload in state.items():
+        if domain == DOMAIN and issue_id.startswith(prefix):
+            return issue_id, payload
+    return None
+
+
+@pytest.mark.asyncio
+async def test_self_check_clean_creates_no_issue(
+    hass, _capture_async_converse, _issue_registry_state
+):
+    """Non-clashing intents must not raise a repair issue."""
+    hass.data.setdefault(DOMAIN, {})[KEY_CONVERSATION_INTENTS] = {
+        "PumpeAn": ["Pumpe an"],
+        "PumpeAus": ["Pumpe aus"],
+    }
+    agent = _make_agent(hass, threshold=70)
+    await agent.async_added_to_hass()
+
+    assert _issue_registry_state == {}
+
+
+@pytest.mark.asyncio
+async def test_self_check_detects_clash(hass, _capture_async_converse, _issue_registry_state):
+    """A pattern that consistently routes to a wrong intent must surface as an issue."""
+    hass.data.setdefault(DOMAIN, {})[KEY_CONVERSATION_INTENTS] = {
+        # Two intents with the same canonical sentence guarantee a clash.
+        "IntentA": ["Foo bar"],
+        "IntentB": ["Foo bar"],
+    }
+    agent = _make_agent(hass, threshold=70)
+    await agent.async_added_to_hass()
+
+    found = _find_self_check_issue(_issue_registry_state)
+    assert found is not None, "expected a self-check repair issue to be raised"
+    issue_id, issue = found
+    # Count encoded in the id (suffix after the language).
+    assert issue_id.rsplit("_", 1)[-1].isdigit()
+    assert issue["translation_key"] == "self_check_clashes"
+    details = issue["translation_placeholders"]["details"]
+    # Group heading present, code-fenced source intent name.
+    assert "### `IntentA`" in details or "### `IntentB`" in details
+    assert "`IntentA`" in details and "`IntentB`" in details
+    assert "is matched as" in details
+
+
+@pytest.mark.asyncio
+async def test_self_check_pretty_pattern_restores_slot_names(
+    hass, _capture_async_converse, _issue_registry_state
+):
+    """When a slot-bearing intent clashes, the details render `{slot_name}` not sentinels."""
+    hass.data.setdefault(DOMAIN, {})[KEY_CONVERSATION_INTENTS] = {
+        # Two intents with the same fixed surface but different slot names.
+        "Add_Shopping": ["Add {item} to the list"],
+        "Add_Todo": ["Add {task} to the list"],
+    }
+    agent = _make_agent(hass, threshold=70)
+    await agent.async_added_to_hass()
+
+    found = _find_self_check_issue(_issue_registry_state)
+    assert found is not None, "expected a self-check repair issue to be raised"
+    _, issue = found
+    details = issue["translation_placeholders"]["details"]
+    # Slot names render in {curly braces}, not as the SLOT_WILDCARD sentinel.
+    assert "{item}" in details or "{task}" in details
+    # The internal sentinel must not leak through.
+    assert "zqzqxslotx" not in details
+    assert "\x00slot\x00" not in details
+
+
+@pytest.mark.asyncio
+async def test_self_check_clears_prior_issue_on_rebuild(
+    hass, _capture_async_converse, _issue_registry_state
+):
+    """A rebuild that resolves all clashes must delete the previous repair card."""
+    hass.data.setdefault(DOMAIN, {})[KEY_CONVERSATION_INTENTS] = {
+        "IntentA": ["Foo bar"],
+        "IntentB": ["Foo bar"],
+    }
+    agent = _make_agent(hass, threshold=70)
+    await agent.async_added_to_hass()
+
+    found = _find_self_check_issue(_issue_registry_state)
+    assert found is not None
+    prior_id, _ = found
+
+    # User removes the duplicate, then we trigger a rebuild via apply_options.
+    hass.data[DOMAIN][KEY_CONVERSATION_INTENTS] = {"IntentA": ["Foo bar"]}
+    agent.apply_options(
+        threshold=70,
+        slot_threshold=None,
+        expansion_cap=16,
+        denylist=None,
+        include_builtins=False,
+        builtin_allowlist=None,
+        slot_extraction=True,
+        fallback_agent_id="conversation.home_assistant",
+    )
+    # Force a fresh pool build (and therefore a fresh self-check run).
+    await agent._async_get_pool("de")
+
+    # Prior id must be gone, no new id created (no clashes).
+    assert (DOMAIN, prior_id) not in _issue_registry_state
+    assert _find_self_check_issue(_issue_registry_state) is None
+
+
+@pytest.mark.asyncio
+async def test_self_check_replaces_prior_issue_when_count_changes(
+    hass, _capture_async_converse, _issue_registry_state
+):
+    """When the clash count changes, the prior id is deleted before the new one is written."""
+    hass.data.setdefault(DOMAIN, {})[KEY_CONVERSATION_INTENTS] = {
+        "IntentA": ["Foo bar"],
+        "IntentB": ["Foo bar"],
+        "IntentC": ["Foo bar"],
+    }
+    agent = _make_agent(hass, threshold=70)
+    await agent.async_added_to_hass()
+
+    found = _find_self_check_issue(_issue_registry_state)
+    assert found is not None
+    prior_id, _ = found
+    prior_count = int(prior_id.rsplit("_", 1)[-1])
+
+    # Drop one clashing intent -> count decreases on rebuild.
+    hass.data[DOMAIN][KEY_CONVERSATION_INTENTS] = {
+        "IntentA": ["Foo bar"],
+        "IntentB": ["Foo bar"],
+    }
+    agent.apply_options(
+        threshold=70,
+        slot_threshold=None,
+        expansion_cap=16,
+        denylist=None,
+        include_builtins=False,
+        builtin_allowlist=None,
+        slot_extraction=True,
+        fallback_agent_id="conversation.home_assistant",
+    )
+    await agent._async_get_pool("de")
+
+    found = _find_self_check_issue(_issue_registry_state)
+    assert found is not None
+    new_id, _ = found
+    new_count = int(new_id.rsplit("_", 1)[-1])
+
+    assert new_id != prior_id
+    assert new_count != prior_count
+    # The old id is gone.
+    assert (DOMAIN, prior_id) not in _issue_registry_state
+
+
+@pytest.mark.asyncio
+async def test_self_check_disabled(
+    hass, _capture_async_converse, _issue_registry_state, monkeypatch
+):
+    """With startup_self_check=False, no issue is created even for clashes."""
+    hass.data.setdefault(DOMAIN, {})[KEY_CONVERSATION_INTENTS] = {
+        "IntentA": ["Foo bar"],
+        "IntentB": ["Foo bar"],
+    }
+    agent = ClosestIntentAgent(
+        hass,
+        threshold=70,
+        slot_threshold=None,
+        expansion_cap=16,
+        denylist=None,
+        include_builtins=False,
+        builtin_allowlist=None,
+        slot_extraction=True,
+        fallback_agent_id="conversation.home_assistant",
+        startup_self_check=False,
+        entry_id="TESTENTRY",
+    )
+    await agent.async_added_to_hass()
+
+    assert _issue_registry_state == {}
+
+
+@pytest.mark.asyncio
+async def test_self_check_slot_sentinel_routes_back(
+    hass, _capture_async_converse, _issue_registry_state
+):
+    """Slot-bearing intents materialise to sentinels and must round-trip cleanly."""
+    hass.data.setdefault(DOMAIN, {})[KEY_CONVERSATION_INTENTS] = {
+        "Test_Area": ["Test zwei im {area}"],
+    }
+    hass.data[DOMAIN][KEY_CONVERSATION_LISTS] = {
+        "area": {"values": ["Wohnzimmer", "Büro"]},
+    }
+    agent = _make_agent(hass, threshold=70)
+    await agent.async_added_to_hass()
+
+    assert _issue_registry_state == {}
+
+
 # Allow tests to run without the pytest-asyncio plugin
 def pytest_collection_modifyitems(config, items):  # pragma: no cover
     if config.pluginmanager.hasplugin("asyncio"):

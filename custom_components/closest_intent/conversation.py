@@ -26,11 +26,13 @@ try:
         CONF_INCLUDE_BUILTINS,
         CONF_SLOT_EXTRACTION,
         CONF_SLOT_THRESHOLD,
+        CONF_STARTUP_SELF_CHECK,
         CONF_THRESHOLD,
         DEFAULT_EXPANSION_CAP,
         DEFAULT_FALLBACK_AGENT,
         DEFAULT_INCLUDE_BUILTINS,
         DEFAULT_SLOT_EXTRACTION,
+        DEFAULT_STARTUP_SELF_CHECK,
         DEFAULT_THRESHOLD,
         DOMAIN,
         KEY_AGENT_INSTANCES,
@@ -59,11 +61,13 @@ except ImportError:  # pragma: no cover
         CONF_INCLUDE_BUILTINS,
         CONF_SLOT_EXTRACTION,
         CONF_SLOT_THRESHOLD,
+        CONF_STARTUP_SELF_CHECK,
         CONF_THRESHOLD,
         DEFAULT_EXPANSION_CAP,
         DEFAULT_FALLBACK_AGENT,
         DEFAULT_INCLUDE_BUILTINS,
         DEFAULT_SLOT_EXTRACTION,
+        DEFAULT_STARTUP_SELF_CHECK,
         DEFAULT_THRESHOLD,
         DOMAIN,
         KEY_AGENT_INSTANCES,
@@ -112,6 +116,7 @@ async def async_setup_entry(
         builtin_allowlist=opt(CONF_BUILTIN_ALLOWLIST, None),
         slot_extraction=opt(CONF_SLOT_EXTRACTION, DEFAULT_SLOT_EXTRACTION),
         fallback_agent_id=opt(CONF_FALLBACK_AGENT, DEFAULT_FALLBACK_AGENT),
+        startup_self_check=opt(CONF_STARTUP_SELF_CHECK, DEFAULT_STARTUP_SELF_CHECK),
         entry_id=entry.entry_id,
     )
     hass.data.setdefault(DOMAIN, {}).setdefault(KEY_AGENT_INSTANCES, {})[entry.entry_id] = agent
@@ -142,6 +147,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
         builtin_allowlist=opt(CONF_BUILTIN_ALLOWLIST, None),
         slot_extraction=opt(CONF_SLOT_EXTRACTION, DEFAULT_SLOT_EXTRACTION),
         fallback_agent_id=opt(CONF_FALLBACK_AGENT, DEFAULT_FALLBACK_AGENT),
+        startup_self_check=opt(CONF_STARTUP_SELF_CHECK, DEFAULT_STARTUP_SELF_CHECK),
     )
 
 
@@ -162,6 +168,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         builtin_allowlist: list[str] | None,
         slot_extraction: bool,
         fallback_agent_id: str,
+        startup_self_check: bool = DEFAULT_STARTUP_SELF_CHECK,
         entry_id: str,
     ) -> None:
         self.hass = hass
@@ -173,6 +180,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         self._builtin_allowlist = set(builtin_allowlist) if builtin_allowlist else None
         self._slot_extraction = slot_extraction
         self._fallback_agent_id = fallback_agent_id
+        self._startup_self_check = startup_self_check
         self._entry_id = entry_id
 
         # Per-language pools: built lazily on first request for that
@@ -184,6 +192,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         self._pools: dict[str, tuple[Resolver, list[Candidate], list[Candidate]]] = {}
         self._pool_locks: dict[str, asyncio.Lock] = {}
         self._builtin_intents_cache: dict[str, dict[str, list[str]]] = {}
+        self._self_check_issue_ids: dict[str, str] = {}
         self._rebuild_handle = None  # async_call_later cancel handle
         self._unsub_listeners: list = []
 
@@ -238,6 +247,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         builtin_allowlist: list[str] | None,
         slot_extraction: bool,
         fallback_agent_id: str,
+        startup_self_check: bool = DEFAULT_STARTUP_SELF_CHECK,
     ) -> None:
         self._threshold = threshold
         self._slot_threshold = slot_threshold
@@ -247,6 +257,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         self._builtin_allowlist = set(builtin_allowlist) if builtin_allowlist else None
         self._slot_extraction = slot_extraction
         self._fallback_agent_id = fallback_agent_id
+        self._startup_self_check = startup_self_check
         # Anything affecting candidate composition invalidates the pools.
         self._pools.clear()
         self._builtin_intents_cache.clear()
@@ -310,7 +321,17 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             )
             self._pools[language] = pool
             self._builtin_intents_cache[language] = builtin_intents
-            return pool
+
+        if self._startup_self_check:
+            try:
+                clashes = await self.hass.async_add_executor_job(
+                    self._self_check, language, pool[0], pool[1], pool[2]
+                )
+            except Exception:  # pragma: no cover
+                _LOGGER.exception("[%s] self-check raised", language)
+                clashes = []
+            self._publish_self_check_issue(language, clashes)
+        return pool
 
     def _find_default_agent(self):
         get_agent = getattr(conversation, "async_get_agent", None)
@@ -711,6 +732,96 @@ class ClosestIntentAgent(conversation.ConversationEntity):
                 return (c, captured, s)
         return None
 
+    def _self_check(
+        self,
+        language: str,
+        resolver: Resolver,
+        user_candidates: list[Candidate],
+        builtin_candidates: list[Candidate],
+    ) -> list[dict]:
+        """
+        For each user candidate, feed its own canonical form back through the matcher.
+        Anything that does not round-trip to the same intent is reported as a clash.
+        """
+        if not user_candidates:
+            return []
+        combined = user_candidates + builtin_candidates
+        clashes: list[dict] = []
+        for c in user_candidates:
+            perfect = _materialise_candidate_input(c)
+            if not perfect:
+                continue
+            try:
+                detail = self._match(perfect, resolver, combined)
+            except Exception:  # pragma: no cover
+                _LOGGER.exception("self_check: match raised for %r", perfect)
+                continue
+            if detail is None:
+                clashes.append(
+                    {
+                        "expected_intent": c.intent,
+                        "pattern": _pretty_pattern(c),
+                        "input": perfect,
+                        "got_intent": None,
+                        "got_pattern": None,
+                        "score": None,
+                    }
+                )
+                continue
+            winner, _, score_value, _ = detail
+            if winner.intent != c.intent:
+                clashes.append(
+                    {
+                        "expected_intent": c.intent,
+                        "pattern": _pretty_pattern(c),
+                        "input": perfect,
+                        "got_intent": winner.intent,
+                        "got_pattern": _pretty_pattern(winner),
+                        "score": score_value,
+                    }
+                )
+        if clashes:
+            _LOGGER.warning(
+                "[%s] self-check found %d intent clash(es); see repairs UI for details",
+                language,
+                len(clashes),
+            )
+        else:
+            _LOGGER.debug("[%s] self-check passed (%d intents)", language, len(user_candidates))
+        return clashes
+
+    def _publish_self_check_issue(self, language: str, clashes: list[dict]) -> None:
+        try:
+            from homeassistant.helpers import issue_registry as ir  # type: ignore
+        except ImportError:  # pragma: no cover - test stub path
+            return
+        prior_id = self._self_check_issue_ids.pop(language, None)
+        if prior_id is not None:
+            try:
+                ir.async_delete_issue(self.hass, DOMAIN, prior_id)
+            except Exception:  # pragma: no cover
+                _LOGGER.exception("[%s] failed to delete prior self-check issue", language)
+        if not clashes:
+            return
+        issue_id = f"self_check_{self._entry_id}_{language}_{len(clashes)}"
+        try:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                issue_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="self_check_clashes",
+                translation_placeholders={
+                    "language": language,
+                    "count": str(len(clashes)),
+                    "details": _format_clashes(clashes),
+                },
+            )
+            self._self_check_issue_ids[language] = issue_id
+        except Exception:  # pragma: no cover
+            _LOGGER.exception("[%s] failed to publish self-check issue", language)
+
     async def parse_sentence(
         self,
         language: str,
@@ -967,6 +1078,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             "slot_extraction": self._slot_extraction,
             "fallback_agent_id": self._fallback_agent_id,
             "denylist": sorted(self._denylist) if self._denylist else None,
+            "startup_self_check": self._startup_self_check,
             "languages": {},
         }
         if intent_filter is not None:
@@ -1015,6 +1127,79 @@ def _no_match(
         response=response,
         conversation_id=user_input.conversation_id,
     )
+
+
+_SELFCHECK_SLOT_SENTINEL_PREFIX = "zqzqxslotx"
+_SELFCHECK_SLOT_SENTINEL_SUFFIX = "xzqzq"
+
+
+def _materialise_candidate_input(c: Candidate) -> str:
+    """Return the candidate text with each ``SLOT_WILDCARD`` replaced by a unique sentinel."""
+    if SLOT_WILDCARD not in c.text:
+        return re.sub(r"\s+", " ", c.text).strip()
+    parts = c.text.split(SLOT_WILDCARD)
+    pieces = [parts[0]]
+    for i, part in enumerate(parts[1:]):
+        sentinel = f" {_SELFCHECK_SLOT_SENTINEL_PREFIX}{i}{_SELFCHECK_SLOT_SENTINEL_SUFFIX} "
+        pieces.append(sentinel)
+        pieces.append(part)
+    return re.sub(r"\s+", " ", "".join(pieces)).strip()
+
+
+def _pretty_pattern(c: Candidate) -> str:
+    """Render a candidate's pattern with ``{slot_name}`` placeholders restored."""
+    src = c.display_text or c.text
+    if SLOT_WILDCARD not in src:
+        return re.sub(r"\s+", " ", src).strip()
+    parts = src.split(SLOT_WILDCARD)
+    n_slots = len(parts) - 1
+    names = list(c.slot_names) + ["slot"] * max(0, n_slots - len(c.slot_names))
+    pieces = [parts[0]]
+    for slot_name, part in zip(names[:n_slots], parts[1:], strict=False):
+        pieces.append("{" + slot_name + "}")
+        pieces.append(part)
+    return re.sub(r"\s+", " ", "".join(pieces)).strip()
+
+
+def _format_clashes(clashes: list[dict]) -> str:
+    """Markdown summary grouped by source intent."""
+    grouped: dict[str, list[dict]] = {}
+    for c in clashes:
+        grouped.setdefault(c["expected_intent"], []).append(c)
+
+    sections: list[str] = []
+    for source_intent in sorted(grouped):
+        entries = grouped[source_intent]
+        seen: set[tuple] = set()
+        unique: list[dict] = []
+        for c in entries:
+            key = (c["pattern"], c.get("got_intent"), c.get("got_pattern"))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(c)
+
+        # Sort: real shadowers alphabetically, "matched nothing" at the end.
+        unique.sort(
+            key=lambda c: (
+                c.get("got_intent") is None,
+                (c.get("got_intent") or "").lower(),
+                c["pattern"].lower(),
+            )
+        )
+
+        lines = [f"### `{source_intent}`", ""]
+        for c in unique:
+            if c.get("got_intent") is None:
+                lines.append(f"- `{c['pattern']}` matched nothing above threshold")
+            else:
+                lines.append(
+                    f"- {c['pattern']}` is matched as `{c['got_pattern']}`"
+                    f"`from `{c['got_intent']}` (score {c['score']})"
+                )
+        sections.append("\n".join(lines))
+
+    return "\n\n".join(sections)
 
 
 def _parse_raw_list_values(raw_def) -> list[str]:

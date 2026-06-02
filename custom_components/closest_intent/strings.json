@@ -1,0 +1,8 @@
+{
+  "issues": {
+    "self_check_clashes": {
+      "title": "Closest Intent: {count} clashing custom intent(s)",
+      "description": "Closest Intent's startup self-check feeds each of your custom intents' canonical sentence through the fuzzy matcher. For **{count}** intent(s) in language `{language}`, the matcher routed these perfect inputs to a *different* intent rather than the one it came from.\n\nThis usually means two custom intents have fuzzy-overlapping patterns and one is consistently shadowing the other on perfect input.\n\n**Clashes, grouped by the intent that should have been matched:**\n\n{details}\n\n**Before opening an issue about these**, please try to determine if these matches are legitimate fuzzy-matching behavior errors, or configuration errors. Use the `parse_sentence` and `dump_candidates` debug tools.\n\nIf you believe the errors are genuinely bugs in Closest Intent, please open an issue with as much detail as you can provide! In the meantime, here's some stop-gap measure you can take:\n\n- Narrow the source pattern: add more anchoring words so it stops matching the shadowing input.\n- Add the shadowing intent's name to `denylist` if you do not actually use it.\n- Set `startup_self_check: false` if the clashes are acceptable for your usage."
+    }
+  }
+}

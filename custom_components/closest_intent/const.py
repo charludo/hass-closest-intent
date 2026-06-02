@@ -27,11 +27,13 @@ CONF_INCLUDE_BUILTINS = "include_builtins"
 CONF_BUILTIN_ALLOWLIST = "builtin_allowlist"
 CONF_SLOT_EXTRACTION = "slot_extraction"
 CONF_FALLBACK_AGENT = "fallback_agent"
+CONF_STARTUP_SELF_CHECK = "startup_self_check"
 
 DEFAULT_THRESHOLD = 70
 DEFAULT_EXPANSION_CAP = 16
 DEFAULT_INCLUDE_BUILTINS = False
 DEFAULT_SLOT_EXTRACTION = True
+DEFAULT_STARTUP_SELF_CHECK = True
 # Fallback conversation agent, used only when hassil errors or returns no
 # intent match. The canonical sentence itself always goes to hassil first.
 # Be careful not to create a loop...

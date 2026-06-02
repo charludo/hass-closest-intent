@@ -230,6 +230,7 @@ The integration can be set up entirely in the UI (**Settings** -> **Devices & se
 | `builtin_allowlist` | `[]` | A list of builtin intents to include for matching, even if `include_builtins` is off. Highly recommended over `include_builtins`. Allows you to e.g. enable `HassTurnOn` separately. |
 | `slot_extraction` | `true` | Extract slot values from the user's speech and substitute them into the canonical sentence. Disable to make the integration only correct slot-less phrases. (Why would you do this though, this is the best part!)|
 | `fallback_agent` | `conversation.home_assistant` | Agent consulted if no match for the canonical sentence is found. Default is Hassil itself, i.e. "no fallback". Set to an LLM agent if you want one. |
+| `startup_self_check` | `true` | After the candidate pool is built, feed every custom intent's own canonical form back through the matcher. Any intent whose perfect input does not route to itself is reported as a HomeAssistant repair issue. Useful for spotting two intents that shadow each other. Disable if the repair issue is noisy. |
 
 #### YAML configuration
 
@@ -243,6 +244,7 @@ closest_intent:
   builtin_allowlist: []
   slot_extraction: true
   fallback_agent: conversation.home_assistant
+  startup_self_check: true
 ```
 
 &#160;
