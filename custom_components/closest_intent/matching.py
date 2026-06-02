@@ -247,234 +247,184 @@ def _normalise_keepcase(s: str) -> str:
     return s
 
 
-# Slot patterns: how far from the relevant edge of the user text a
-# fixed anchor is allowed to land before we start charging penalty.
-# One token of leading STT-noise is fine (``"uhm add bread..."``);
-# beyond that, the candidate's fixed prefix doesn't actually anchor
-# the user phrase and we must downscore.
-_ANCHOR_NOISE_TOLERANCE_TOKENS = 1
-# Penalty per misaligned token. Two extra tokens before/after a fixed
-# anchor enough to push a 100-scoring candidate below the default 70
-# threshold.
-_ANCHOR_MISALIGN_PENALTY_PER_TOKEN = 25
-# When a non-empty leading/trailing anchor doesn't appear in user text
-# at all (no alignment passes this score), candidate is structurally
-# wrong: charge a flat penalty equivalent to ~2 misaligned tokens.
-_ANCHOR_ABSENT_PENALTY = 50
-_ANCHOR_ALIGNMENT_MIN_SCORE = 60
+_MIN_ALIGNMENT_SCORE = 60
+_DEST_COVERAGE_MIN_RATIO = 0.6
 
 
-def _anchor_offset_tokens(anchor: str, user_norm: str, *, from_end: bool) -> int | None:
-    """
-    Return token count between ``anchor``'s alignment and the
-    relevant edge of ``user_norm``, or ``None`` if no usable alignment.
-
-    ``from_end=False`` measures tokens before the anchor,
-    ``from_end=True`` measures tokens after the anchor's end.
-
-    Mid-word alignments are rejected.
-    """
-    if not anchor:
-        return 0
-    if not user_norm:
-        return None
-    align = fuzz.partial_ratio_alignment(
-        anchor, user_norm, score_cutoff=_ANCHOR_ALIGNMENT_MIN_SCORE
-    )
-    if align is None or align.score < _ANCHOR_ALIGNMENT_MIN_SCORE:
-        return None
-    if from_end:
-        if align.dest_end < len(user_norm) and user_norm[align.dest_end].isalnum():
-            return None
-        tail = user_norm[align.dest_end :]
-        return len(tail.split())
-    if align.dest_start > 0 and user_norm[align.dest_start - 1].isalnum():
-        return None
-    head = user_norm[: align.dest_start]
-    return len(head.split())
-
-
-def _anchor_penalty(parts: list[str], user_norm: str) -> int:
-    """
-    Sum of edge-anchor misalignment penalties for a slot pattern.
-
-    A pattern like ``"shopping list {item}"`` requires "shopping list"
-    at (or very near) the start of user input. If it lands several
-    tokens deep, the candidate doesn't actually fit the user text shape,
-    even though the substring is present and ``partial_ratio`` happily scores 100.
-
-    Same idea at the trailing edge for ``"{item} to the shopping list"``.
-
-    Patterns with a slot at the boundary (empty leading/trailing fixed text)
-    are unconstrained at that edge, since the slot can soak up
-    arbitrary content there.
-    """
-    leading = parts[0].strip() if parts else ""
-    trailing = parts[-1].strip() if len(parts) > 1 else ""
-    penalty = 0
-
-    if leading:
-        offset = _anchor_offset_tokens(leading, user_norm, from_end=False)
-        if offset is None:
-            penalty += _ANCHOR_ABSENT_PENALTY
-        else:
-            extra = max(0, offset - _ANCHOR_NOISE_TOLERANCE_TOKENS)
-            penalty += extra * _ANCHOR_MISALIGN_PENALTY_PER_TOKEN
-
-    if trailing:
-        offset = _anchor_offset_tokens(trailing, user_norm, from_end=True)
-        if offset is None:
-            penalty += _ANCHOR_ABSENT_PENALTY
-        else:
-            extra = max(0, offset - _ANCHOR_NOISE_TOLERANCE_TOKENS)
-            penalty += extra * _ANCHOR_MISALIGN_PENALTY_PER_TOKEN
-
-    return penalty
-
-
-_SLOT_TOKEN_BUDGET = 3
-_SLOT_PROPORTION_PENALTY_PER_TOKEN = 10
-_SLOT_PROPORTION_PENALTY_CAP = 40
-
-
-def _slot_proportion_penalty(cand_stripped: str, user_norm: str, slot_count: int) -> int:
-    """Penalty for slotted candidates whose fixed text is only a small part of the user input."""
-    if not cand_stripped or slot_count == 0:
-        return 0
-    fixed_tokens = len(cand_stripped.split())
-    user_tokens = len(user_norm.split())
-    expected_tokens = fixed_tokens + slot_count * _SLOT_TOKEN_BUDGET
-    excess = user_tokens - expected_tokens
-    if excess <= 0:
-        return 0
-    return min(_SLOT_PROPORTION_PENALTY_CAP, excess * _SLOT_PROPORTION_PENALTY_PER_TOKEN)
-
-
-def score(user_text: str, candidate_text: str, resolver: Resolver | None = None) -> int:
+def score(
+    user_text: str,
+    candidate_text: str,
+    resolver: Resolver | None = None,
+    slot_names: list[str] | None = None,
+) -> int:
     """
     Similarity 0..100 with the slot wildcard ignored.
 
-    Two regimes, picked by whether the candidate contains slot positions:
-
-    - **No slots**: ``token_sort_ratio`` on the whole phrase.
-    - **With slots**: ``partial_ratio`` on the candidate's *fixed parts*
-      against the full user text, minus an edge-anchor misalignment penalty
+    Two regimes, picked by whether the candidate contains slot positions.
     """
     user_norm = _normalise(user_text)
     cand_stripped = re.sub(r"\s+", " ", candidate_text.replace(SLOT_WILDCARD, " ")).strip()
-    threshold = resolver.match_threshold if resolver is not None else 70
 
     if SLOT_WILDCARD in candidate_text:
         if not cand_stripped:
             return 0
-        base = int(fuzz.partial_ratio(user_norm, cand_stripped, score_cutoff=threshold))
-        parts = candidate_text.split(SLOT_WILDCARD)
-        penalty = _anchor_penalty(parts, user_norm)
-        penalty += _slot_proportion_penalty(cand_stripped, user_norm, len(parts) - 1)
-        return max(0, base - penalty)
+        return _slotted_score(
+            candidate_text.split(SLOT_WILDCARD),
+            user_norm,
+            slot_names=slot_names,
+            resolver=resolver,
+        )
 
     ts = int(fuzz.token_sort_ratio(user_norm, cand_stripped))
     r = int(fuzz.ratio(user_norm, cand_stripped))
     return max(ts, r)
 
 
+def _slot_credit(slot_text: str, slot_name: str | None, resolver: Resolver | None) -> int:
+    """How well ``slot_text`` matches the slot's known list values."""
+    if not slot_text:
+        return 0
+    if resolver is None or not slot_name:
+        return 100
+    values = resolver.slot_values.get(slot_name)
+    if not values:
+        return 100
+    best = 0
+    for v in values:
+        r = int(fuzz.ratio(slot_text, _normalise(v)))
+        if r > best:
+            best = r
+            if best >= 100:
+                break
+    return best
+
+
+def _slotted_score(
+    parts: list[str],
+    user_norm: str,
+    slot_names: list[str] | None = None,
+    resolver: Resolver | None = None,
+) -> int:
+    user_len = len(user_norm)
+    if user_len == 0:
+        return 0
+
+    last_part = len(parts) - 1
+    cursor = 0
+    aligned: list[tuple[int, int, int, int]] = []  # (part_index, dest_start, dest_end, score)
+    for i, part in enumerate(parts):
+        seg = part.strip()
+        if not seg:
+            continue
+        sub = user_norm[cursor:]
+        if not sub:
+            continue
+        a = fuzz.partial_ratio_alignment(seg, sub)
+        if a is None or a.score < _MIN_ALIGNMENT_SCORE:
+            continue
+        ds = cursor + a.dest_start
+        de = cursor + a.dest_end
+        # reject alignments where most of the needle isn't present in user text
+        if (de - ds) < _DEST_COVERAGE_MIN_RATIO * len(seg):
+            continue
+        need_wb_start = i < last_part
+        need_wb_end = i > 0
+        if " " not in user_norm[ds:de]:
+            if need_wb_start and not _is_word_boundary_start(user_norm, ds):
+                continue
+            if need_wb_end and not _is_word_boundary_end(user_norm, de):
+                continue
+        aligned.append((i, ds, de, int(a.score)))
+        cursor = de
+
+    aligned_idx = {a[0] for a in aligned}
+    missing_segments = [
+        p.strip() for i, p in enumerate(parts) if p.strip() and i not in aligned_idx
+    ]
+    if not aligned and missing_segments:
+        return 0
+
+    numerator = sum(sc for _, _, _, sc in aligned)
+    n_segments = len(aligned) + len(missing_segments)
+
+    seen: set[tuple[int, int]] = set()
+    n_slots = len(parts) - 1
+    for k in range(n_slots):
+        left = 0
+        for a in reversed(aligned):
+            if a[0] <= k:
+                left = a[2]
+                break
+        right = user_len
+        for a in aligned:
+            if a[0] >= k + 1:
+                right = a[1]
+                break
+        if (left, right) in seen:
+            continue
+        seen.add((left, right))
+        n_segments += 1
+        if right > left:
+            slot_text = user_norm[left:right].strip()
+            slot_name = slot_names[k] if slot_names and k < len(slot_names) else None
+            numerator += _slot_credit(slot_text, slot_name, resolver)
+
+    if n_segments <= 0:
+        return 0
+    return min(100, numerator // n_segments)
+
+
 _FIND_BEST_TIEBREAK_BAND = 15
-_FIND_BEST_SLOT_COUNT_TIEBREAK_BAND = 5
+_TOKEN_PRESENCE_MIN_RATIO = 60
 
 
-def _fixed_text_length(candidate_text: str) -> int:
-    """Length of the candidate's non-slot text, whitespace-collapsed."""
-    stripped = candidate_text.replace(SLOT_WILDCARD, " ")
-    return len(re.sub(r"\s+", " ", stripped).strip())
-
-
-def _slot_count(candidate_text: str) -> int:
-    return candidate_text.count(SLOT_WILDCARD)
+def _absent_fixed_token_count(cand_text: str, user_tokens: list[str]) -> int:
+    """Number of candidate fixed tokens with no above-threshold match in user."""
+    stripped = cand_text.replace(SLOT_WILDCARD, " ")
+    absent = 0
+    for tok in stripped.split():
+        best = 0
+        for ut in user_tokens:
+            r = int(fuzz.ratio(tok, ut))
+            if r > best:
+                best = r
+                if best >= 100:
+                    break
+        if best < _TOKEN_PRESENCE_MIN_RATIO:
+            absent += 1
+    return absent
 
 
 def find_best(
     user_text: str, candidates: Iterable[Candidate], resolver: Resolver
 ) -> tuple[Candidate, int] | None:
-    """
-    Find the best candidate above ``threshold``.
-
-    - First, find highest-scoring candidate.
-    - Then, among the top performing ones (within ``_FIND_BEST_TIEBREAK_BAND`` of the top score),
-      prefer fewer slots, then longer fixed text, then higher score.
-      Tie-break rejects siblings whose slot at a leading or trailing boundary absorbs material
-      a more-anchored sibling would treat as a fixed prefix/suffix, e.g.
-      ``put {item} on the shopping list`` over the bare ``{item} on the shopping list``
-      when the user actually said 'put'.
-    """
+    """Highest-scoring candidate above ``resolver.match_threshold``, or ``None``."""
     threshold = resolver.match_threshold
     scored: list[tuple[Candidate, int]] = []
     for c in candidates:
-        s = score(user_text, c.text, resolver)
-        if s < threshold:
-            continue
-        scored.append((c, s))
+        s = score(user_text, c.text, resolver, slot_names=c.slot_names)
+        if s >= threshold:
+            scored.append((c, s))
     if not scored:
         return None
 
     scored.sort(key=lambda cs: -cs[1])
-    top_score = scored[0][1]
-
-    tight_floor = top_score - _FIND_BEST_SLOT_COUNT_TIEBREAK_BAND
-    tight = [cs for cs in scored if cs[1] >= tight_floor]
-    if len(tight) > 1 and len({_slot_count(c.text) for (c, _) in tight}) > 1:
-        tight.sort(
-            key=lambda cs: (
-                _slot_count(cs[0].text),
-                -_fixed_text_length(cs[0].text),
-                -cs[1],
-            )
-        )
-        return tight[0]
-
-    band_floor = top_score - _FIND_BEST_TIEBREAK_BAND
+    band_floor = scored[0][1] - _FIND_BEST_TIEBREAK_BAND
     contenders = [cs for cs in scored if cs[1] >= band_floor]
     if len(contenders) == 1:
         return contenders[0]
 
-    if all(SLOT_WILDCARD in c.text for (c, _) in contenders):
-        contenders.sort(key=lambda cs: (-_fixed_text_length(cs[0].text), -cs[1]))
+    user_norm = _normalise(user_text)
+    user_tokens = user_norm.split()
+
+    def _key(cs: tuple[Candidate, int]) -> tuple[int, int, int, int]:
+        absent = _absent_fixed_token_count(cs[0].text, user_tokens)
+        fixed = re.sub(r"\s+", " ", cs[0].text.replace(SLOT_WILDCARD, " ")).strip()
+        ts = int(fuzz.token_sort_ratio(user_norm, fixed))
+        return (absent, -ts, -cs[1], -len(fixed))
+
+    contenders.sort(key=_key)
     return contenders[0]
-
-
-_FIXED_PART_ALIGNMENT_THRESHOLD = 60
-
-_MAX_BOUNDARY_LOOKAHEAD = 8
-
-
-def _word_boundary_ends(sub: str, s: int, max_words: int = _MAX_BOUNDARY_LOOKAHEAD) -> list[int]:
-    """
-    End positions in ``sub[s:]`` that fall on word boundaries (each space, plus end-of-string).
-    Capped at ``max_words`` so search stays cheap regardless of input length.
-    """
-    pos = s
-    out: list[int] = []
-    while pos < len(sub) and len(out) < max_words:
-        next_space = sub.find(" ", pos)
-        if next_space == -1:
-            out.append(len(sub))
-            break
-        out.append(next_space)
-        pos = next_space + 1
-    return out
-
-
-def _word_boundary_starts(sub: str, e: int, max_words: int = _MAX_BOUNDARY_LOOKAHEAD) -> list[int]:
-    """Start positions in ``sub[:e]`` on word boundaries."""
-    pos = e
-    out: list[int] = []
-    while pos > 0 and len(out) < max_words:
-        prev_space = sub.rfind(" ", 0, pos)
-        if prev_space == -1:
-            out.append(0)
-            break
-        out.append(prev_space + 1)
-        pos = prev_space
-    return out
 
 
 def _is_word_boundary_start(sub: str, pos: int) -> bool:
@@ -485,48 +435,59 @@ def _is_word_boundary_end(sub: str, pos: int) -> bool:
     return pos == len(sub) or not sub[pos].isalnum()
 
 
+_MAX_BOUNDARY_LOOKAHEAD = 8
 _MID_WORD_ALIGNMENT_PENALTY = 25
 
 
-def _aligned_score(fixed: str, sub: str, s: int, e: int) -> int:
-    score = int(fuzz.ratio(fixed, sub[s:e]))
-    if not (_is_word_boundary_start(sub, s) and _is_word_boundary_end(sub, e)):
-        score -= _MID_WORD_ALIGNMENT_PENALTY
-    return score
-
-
 def _align_fixed_part(fixed: str, user: str, start: int) -> tuple[int, int] | None:
-    """
-    Find where ``fixed`` approximately occurs in ``user[start:]``.
-
-    Two-stage alignment:
-      1. ``partial_ratio_alignment`` finds a starting point with merged-token tolerance
-      2. We then enumerate word-boundary start/end positions, picking the (start, end) pair
-         with the highest ``fuzz.ratio`` against ``fixed``.
-
-    Slot captures end up on token boundaries unless the input is genuinely mid-word.
-    Mid-word alignments are penalized so that a clean word-boundary match wins over a
-    perfect-but-incidental substring match.
-    """
-    sub = user[start:]
+    """Find where ``fixed`` approximately occurs in ``user[start:]``."""
     if not fixed:
         return (start, start)
+    sub = user[start:]
     if not sub:
         return None
-    alignment = fuzz.partial_ratio_alignment(fixed, sub)
-    if alignment is None or alignment.score < _FIXED_PART_ALIGNMENT_THRESHOLD:
+    align = fuzz.partial_ratio_alignment(fixed, sub)
+    if align is None or align.score < _MIN_ALIGNMENT_SCORE:
         return None
-    best_start = alignment.dest_start
-    best_end = alignment.dest_end
-    best_score = _aligned_score(fixed, sub, best_start, best_end)
-    for cand_end in _word_boundary_ends(sub, best_start):
-        score = _aligned_score(fixed, sub, best_start, cand_end)
-        if score > best_score:
-            best_end, best_score = cand_end, score
-    for cand_start in _word_boundary_starts(sub, alignment.dest_start):
-        score = _aligned_score(fixed, sub, cand_start, best_end)
-        if score > best_score:
-            best_start, best_score = cand_start, score
+
+    def _score_window(s: int, e: int) -> int:
+        sc = int(fuzz.ratio(fixed, sub[s:e]))
+        if not (_is_word_boundary_start(sub, s) and _is_word_boundary_end(sub, e)):
+            sc -= _MID_WORD_ALIGNMENT_PENALTY
+        return sc
+
+    def _boundaries(pivot: int, forward: bool) -> Iterable[int]:
+        """Up to ``_MAX_BOUNDARY_LOOKAHEAD`` word boundaries in one direction."""
+        out: list[int] = []
+        pos = pivot
+        if forward:
+            while pos < len(sub) and len(out) < _MAX_BOUNDARY_LOOKAHEAD:
+                nxt = sub.find(" ", pos)
+                if nxt == -1:
+                    out.append(len(sub))
+                    break
+                out.append(nxt)
+                pos = nxt + 1
+        else:
+            while pos > 0 and len(out) < _MAX_BOUNDARY_LOOKAHEAD:
+                prev = sub.rfind(" ", 0, pos)
+                if prev == -1:
+                    out.append(0)
+                    break
+                out.append(prev + 1)
+                pos = prev
+        return out
+
+    best_start, best_end = align.dest_start, align.dest_end
+    best = _score_window(best_start, best_end)
+    for e in _boundaries(best_start, forward=True):
+        sc = _score_window(best_start, e)
+        if sc > best:
+            best_end, best = e, sc
+    for s in _boundaries(align.dest_start, forward=False):
+        sc = _score_window(s, best_end)
+        if sc > best:
+            best_start, best = s, sc
     return (start + best_start, start + best_end)
 
 

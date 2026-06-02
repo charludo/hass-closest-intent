@@ -750,3 +750,297 @@ def test_regression_wetter_morgen_does_not_steal_stunde_pattern() -> None:
     assert result is not None
     intent, _ = result
     assert intent == "WetterMorgen", f"matched wrong intent: {intent}"
+
+
+_MUSIK_SONG_POOL = _pool_from_patterns(
+    {
+        "Musik_Song": [
+            "Spiele Lied {mass_track}",
+            "Spiele Song {mass_track}",
+            "Spiel Lied {mass_track}",
+            "Spiel Song {mass_track}",
+        ],
+        "Musik_SongVonKuenstler": [
+            "Spiele Lied {mass_track} von {mass_artist}",
+            "Spiele Song {mass_track} von {mass_artist}",
+            "Spiel Lied {mass_track} von {mass_artist}",
+            "Spiel Song {mass_track} von {mass_artist}",
+        ],
+    }
+)
+
+
+def test_regression_song_pattern_not_shadowed_by_song_von_kuenstler() -> None:
+    """
+    'Spiele Lied X' (1 slot) must win over 'Spiele Lied X von Y' (2 slots)
+    when the user input contains no 'von' connective.
+    """
+    user = "spiele lied bohemian rhapsody"
+    result = _agent_match(user, _MUSIK_SONG_POOL)
+    assert result is not None
+    intent, captured = result
+    assert intent == "Musik_Song", f"matched wrong intent: {intent}"
+    assert captured == ["bohemian rhapsody"], f"bad capture: {captured!r}"
+
+
+def test_regression_song_pattern_with_von_routes_to_kuenstler() -> None:
+    """The 2-slot variant still wins when ' von ' IS present in the input."""
+    user = "spiele lied bohemian rhapsody von queen"
+    result = _agent_match(user, _MUSIK_SONG_POOL)
+    assert result is not None
+    intent, captured = result
+    assert intent == "Musik_SongVonKuenstler", f"matched wrong intent: {intent}"
+    assert captured == ["bohemian rhapsody", "queen"], f"bad capture: {captured!r}"
+
+
+_SONNENAUFGANG_POOL = _pool_from_patterns(
+    {
+        "Sonnenaufgang_Heute": [
+            "Wann geht die Sonne auf",
+            "Wann ist Sonnenaufgang",
+            "Wann ist der Sonnenaufgang",
+        ],
+        "Sonnenaufgang_Morgen": [
+            "Wann geht die Sonne morgen auf",
+            "Wann ist morgen Sonnenaufgang",
+            "Wann ist morgen der Sonnenaufgang",
+        ],
+    }
+)
+
+
+def test_regression_sonnenaufgang_heute_not_shadowed_by_morgen() -> None:
+    """
+    Both Sonnenaufgang_Morgen patterns are supersets of their Heute siblings
+    (one extra word `morgen`). On 'Wann geht die Sonne auf', the source
+    Heute candidate scores 100 while Morgen scores ~86 -- within band 15
+    and Morgen's longer fixed text would dominate without an alignment check.
+    """
+    user = "wann geht die sonne auf"
+    result = _agent_match(user, _SONNENAUFGANG_POOL)
+    assert result is not None
+    intent, _ = result
+    assert intent == "Sonnenaufgang_Heute", f"matched wrong intent: {intent}"
+
+
+def test_regression_sonnenaufgang_morgen_keeps_explicit_morgen() -> None:
+    """The morgen variant still wins when 'morgen' is in the user input."""
+    user = "wann geht die sonne morgen auf"
+    result = _agent_match(user, _SONNENAUFGANG_POOL)
+    assert result is not None
+    intent, _ = result
+    assert intent == "Sonnenaufgang_Morgen", f"matched wrong intent: {intent}"
+
+
+_TIMER_POOL = _pool_from_patterns(
+    {
+        "Timer_Stellen_Stunden": [
+            "Stelle einen Timer für {timer_hours} Stunden",
+            "Stelle Timer für {timer_hours} Stunden",
+        ],
+        "Timer_Stellen_Minuten": [
+            "Stelle einen Timer für {timer_minutes} Minuten",
+        ],
+        "Timer_Stellen_Sekunden": [
+            "Stelle einen Timer für {timer_seconds} Sekunden",
+            "Stelle Timer für {timer_seconds} Sekunden",
+        ],
+        "Timer_Stellen_Kombiniert": [
+            "Stelle einen Timer für {timer_hours} Stunden {timer_minutes} Minuten",
+            "Stelle Timer für {timer_hours} Stunden {timer_minutes} Minuten",
+        ],
+    }
+)
+
+
+def test_regression_timer_kombiniert_multi_slot_self_routes() -> None:
+    """
+    Multi-slot candidates (`{h} Stunden {m} Minuten`) must score above
+    threshold on their own perfect input.
+    """
+    user = "stelle einen timer für 2 stunden 30 minuten"
+    result = _agent_match(user, _TIMER_POOL)
+    assert result is not None
+    intent, captured = result
+    assert intent == "Timer_Stellen_Kombiniert", f"matched wrong intent: {intent}"
+    assert captured == ["2", "30"], f"bad capture: {captured!r}"
+
+
+def test_regression_timer_sekunden_not_shadowed_by_stunden() -> None:
+    """
+    `{s} Sekunden` and `{h} Stunden` share an identical prefix and the
+    trailing tokens fuzzy-overlap (`unden` lives inside `sekunden`).
+    """
+    user = "stelle einen timer für 30 sekunden"
+    result = _agent_match(user, _TIMER_POOL)
+    assert result is not None
+    intent, _ = result
+    assert intent == "Timer_Stellen_Sekunden", f"matched wrong intent: {intent}"
+
+
+def test_regression_timer_stunden_routes_correctly() -> None:
+    """The Stunden variant wins when the user actually said `Stunden`."""
+    user = "stelle einen timer für 2 stunden"
+    result = _agent_match(user, _TIMER_POOL)
+    assert result is not None
+    intent, _ = result
+    assert intent == "Timer_Stellen_Stunden", f"matched wrong intent: {intent}"
+
+
+_MUSIK_MULTI_POOL = _pool_from_patterns(
+    {
+        "Musik_Genre": ["Spiele {mass_genre} Musik"],
+        "Musik_Kuenstler": ["Spiele Artist {mass_artist}"],
+        "Musik_Album": ["Spiele Album {mass_album}"],
+        "MusikAn": ["Spiele"],
+    }
+)
+
+
+def test_regression_musik_genre_not_shadowed_by_sibling_intents() -> None:
+    """
+    On `"Spiele jazz Musik"`, the source `Musik_Genre` must win over
+    `Musik_Kuenstler` and `Musik_Album` siblings whose internal anchors
+    (`Artist`, `Album`) are absent from user input.
+    """
+    user = "spiele jazz musik"
+    result = _agent_match(user, _MUSIK_MULTI_POOL)
+    assert result is not None
+    intent, captured = result
+    assert intent == "Musik_Genre", f"matched wrong intent: {intent}"
+    assert captured == ["jazz"], f"bad capture: {captured!r}"
+
+
+def test_regression_musik_kuenstler_routes_correctly() -> None:
+    """The Artist variant wins when the user says `Artist`."""
+    user = "spiele artist queen"
+    result = _agent_match(user, _MUSIK_MULTI_POOL)
+    assert result is not None
+    intent, _ = result
+    assert intent == "Musik_Kuenstler", f"matched wrong intent: {intent}"
+
+
+_TOKEN_PREFIX_POOL = _pool_from_patterns(
+    {
+        "MusikAn": ["Spiel Musik", "Starte"],
+        "Musik_Genre_Long": ["Spiel Musikrichtung {mass_genre}"],
+        "Musik_Kuenstler": ["Starte Artist {mass_artist}"],
+    }
+)
+
+
+def test_regression_0slot_phrase_not_shadowed_by_token_prefix_match() -> None:
+    """
+    A bare 0-slot ``"Spiel Musik"`` must not be shadowed by a 1-slot
+    ``"Spiel Musikrichtung {genre}"``.
+    """
+    user = "spiel musik"
+    result = _agent_match(user, _TOKEN_PREFIX_POOL)
+    assert result is not None
+    intent, _ = result
+    assert intent == "MusikAn", f"matched wrong intent: {intent}"
+
+
+def test_regression_0slot_verb_not_shadowed_by_slotted_continuation() -> None:
+    """``"Starte"`` must not be shadowed by ``"Starte Artist {artist}"``."""
+    user = "starte"
+    result = _agent_match(user, _TOKEN_PREFIX_POOL)
+    assert result is not None
+    intent, _ = result
+    assert intent == "MusikAn", f"matched wrong intent: {intent}"
+
+
+_LOOSE_ALIGNMENT_POOL = _pool_from_patterns(
+    {
+        "ShuffleAn": ["Zufallswiedergabe an"],
+        "ShuffleAus": ["Zufallswiedergabe aus"],
+    }
+)
+
+
+def test_regression_loose_alignment_rescues_user_word_split() -> None:
+    """
+    User-side word splits (STT producing ``"zufalls wiedergabe"`` for
+    ``"zufallswiedergabe"``) must resolve correctly.
+    """
+    user = "zufalls wiedergabe an"
+    result = _agent_match(user, _LOOSE_ALIGNMENT_POOL)
+    assert result is not None
+    intent, _ = result
+    assert intent == "ShuffleAn", f"matched wrong intent: {intent}"
+
+
+_AUS_POOL = _pool_from_patterns(
+    {
+        "Stille_Alle": ["Aus"],
+        "DeviceTurnOff": ["{geraet} aus", "das {geraet} aus"],
+    }
+)
+
+
+def test_regression_bare_aus_routes_to_stille_alle_not_empty_slot() -> None:
+    """
+    On bare ``"aus"``, the 0-slot ``Stille_Alle`` must win over
+    ``DeviceTurnOff "{geraet} aus"``.
+    """
+    user = "aus"
+    result = _agent_match(user, _AUS_POOL)
+    assert result is not None
+    intent, _ = result
+    assert intent == "Stille_Alle", f"matched wrong intent: {intent}"
+
+
+def test_regression_geraet_aus_still_works_when_geraet_is_supplied() -> None:
+    """The 1-slot ``{geraet} aus`` still wins when user actually names a device."""
+    user = "pumpe aus"
+    result = _agent_match(user, _AUS_POOL)
+    assert result is not None
+    intent, captured = result
+    assert intent == "DeviceTurnOff", f"matched wrong intent: {intent}"
+    assert captured == ["pumpe"], f"bad capture: {captured!r}"
+
+
+_IST_DAS_POOL = _pool_from_patterns(
+    {
+        "DeviceTurnOff": ["das {geraet} aus", "die {geraet} aus"],
+        "DeviceStatus": ["Ist das {geraet} aus", "Ist die {geraet} aus"],
+    }
+)
+
+
+def test_regression_ist_das_does_not_shadow_das() -> None:
+    """
+    A candidate ``"Ist das {geraet} aus"`` must not shadow the source
+    ``"das {geraet} aus"`` on the latter's own canonical input.
+    """
+    user = "das pumpe aus"
+    result = _agent_match(user, _IST_DAS_POOL)
+    assert result is not None
+    intent, _ = result
+    assert intent == "DeviceTurnOff", f"matched wrong intent: {intent}"
+
+
+def test_regression_ist_das_still_wins_when_user_says_ist() -> None:
+    """When the user actually said ``"Ist"``, DeviceStatus is the right match."""
+    user = "ist das pumpe aus"
+    result = _agent_match(user, _IST_DAS_POOL)
+    assert result is not None
+    intent, _ = result
+    assert intent == "DeviceStatus", f"matched wrong intent: {intent}"
+
+
+_STRAHLER_POOL = _pool_from_patterns(
+    {
+        "DeviceTurnOn": ["{geraet} an", "das {geraet} an", "die {geraet} an", "den {geraet} an"],
+        "DeviceStatus": ["Ist {geraet} an", "Ist das {geraet} an", "Ist die {geraet} an"],
+    }
+)
+
+
+def test_regression_strahler_an_does_not_route_to_ist_geraet_an() -> None:
+    user = "strahler an"
+    result = _agent_match(user, _STRAHLER_POOL)
+    assert result is not None
+    intent, captured = result
+    assert intent == "DeviceTurnOn", f"matched wrong intent: {intent}"
+    assert captured == ["strahler"], f"bad capture: {captured!r}"
