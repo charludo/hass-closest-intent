@@ -718,7 +718,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         """Highest-scoring same-intent slot-bearing sibling whose slots extract."""
         scored = sorted(
             (
-                (score(user_text, c.text, resolver), c)
+                (score(user_text, c.text, resolver, slot_names=c.slot_names), c)
                 for c in candidates
                 if c is not skip and c.intent == skip.intent and c.has_slots
             ),
@@ -746,13 +746,19 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         if not user_candidates:
             return []
         combined = user_candidates + builtin_candidates
+        sc_resolver = Resolver(
+            expansion_rules=resolver.expansion_rules,
+            slot_values={},
+            match_threshold=resolver.match_threshold,
+            slot_resolution_threshold=resolver.slot_resolution_threshold,
+        )
         clashes: list[dict] = []
         for c in user_candidates:
             perfect = _materialise_candidate_input(c)
             if not perfect:
                 continue
             try:
-                detail = self._match(perfect, resolver, combined)
+                detail = self._match(perfect, sc_resolver, combined)
             except Exception:  # pragma: no cover
                 _LOGGER.exception("self_check: match raised for %r", perfect)
                 continue
@@ -872,7 +878,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         if debug_top_candidates:
             scored_for_debug = sorted(
                 (
-                    (c, score(sentence, c.text, resolver))
+                    (c, score(sentence, c.text, resolver, slot_names=c.slot_names))
                     for c in (user_candidates + builtin_candidates)
                 ),
                 key=lambda cs: -cs[1],
