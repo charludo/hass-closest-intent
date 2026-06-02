@@ -104,7 +104,11 @@ Here's some examples of things I said, what my STT (`wyoming-faster-whisper-base
 ### 💡 How it works
 
 `closest-intent` is registered in HomeAssistant as a conversation agent.
-On startup, it parses (by default) all user-defined intents (or optionally, also the builtins ones). In this process, it also expands all rules, like `<expansion_rule>`, `(alternatives|to)`, and `[optionals]`, and notes where `{slots}` are located, and whether they are wildcards or belong to some list (like areas, entities, or the numbers 1-100).
+On startup, it pulls the already-loaded vocabulary (intents, expansion rules, slot lists) straight from HomeAssistant's default conversation agent.
+This includes the dynamically built `name`/`area`/`floor` lists derived from your exposed entities, areas, and floors.
+
+By default, only user-defined intents enter the candidate pool.
+Built-in intents are kept aside and can either be included wholesale (`include_builtins`) or by name (`builtin_allowlist`).
 
 When a user request comes in (via voice command or the chat box), `closest-intent` fuzzy-matches that request against those expanded rules.
 If the rule does not contain a slot, it is picked immediately.
@@ -182,9 +186,9 @@ There's two major limitations to consider.
    **This issue gets worse the more similar-looking intents you have configured.**
    If you are experiencing issues with this, raise the configured `threshold` (see below).
 1. Not entirely unrelated: by default, the builtin intents are disabled for matching in `closest-intent`. HomeAssistant configures a good amount of intents by default, and does so with a shitton of expansion rules to cover more possible commands.
-   Expanding all those intents is simply not viable (see also: "combinatorial explosion").
-   This is why we expand to a maximum depth of 32 expansions even when you enable builtin intents in `closest intent`.
+   Expanding all those intents in full is simply not viable (see also: "combinatorial explosion"), so the same `expansion_cap` applies to them too.
    In general though, these expansions are not super useful either, since they often cover things like `(How is|How's)`, which just do not matter much with our fuzzy matcher.
+   If you want only specific builtins (e.g. `HassTurnOn`), prefer `builtin_allowlist` over setting `include_builtins` to `true`.
 
 In consequence, I highly recommend configuring your own intents for your personal usecases, if you haven't already.
 The best and most flexible way is through [`custom_sentences`](https://www.home-assistant.io/voice_control/custom_sentences_yaml/).
@@ -220,7 +224,7 @@ The integration can be set up entirely in the UI (**Settings** -> **Devices & se
 | ------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `threshold` | `70` | Minimum fuzzy-match score (0–100) for a candidate to be considered. Higher = stricter. Below the threshold, the original text is forwarded unchanged to the `fallback_agent`. |
 | `slot_threshold` | `threshold` | Minimum fuzzy-match score (0–100) for resolving a captured slot value against the slot's known list values. Higher = stricter, lower = more aggressive correction. Useful when intents usually match, but e.g. entity names are frequently misunderstood. Defaults to `threshold` is. |
-| `expansion_cap` | `16` | Maximum number of surface forms generated per pattern. Bounds the alternation/optional explosion. `0` disables expansion entirely (first branch only). Builtin intent expansion is always capped at `32`.|
+| `expansion_cap` | `16` | Maximum number of surface forms generated per pattern. Bounds the alternation/optional explosion. `0` disables expansion entirely (first branch only). |
 | `denylist` | `[]` | Intent names to exclude from matching. Useful when a built-in or imported intent collides with your own. |
 | `include_builtins` | `false` | Also fuzzy-match against HomeAssistant's built-in intents (`HassTurnOn` etc.). Off by default, see section on limitations. |
 | `slot_extraction` | `true` | Extract slot values from the user's speech and substitute them into the canonical sentence. Disable to make the integration only correct slot-less phrases. (Why would you do this though, this is the best part!)|
