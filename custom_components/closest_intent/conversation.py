@@ -191,6 +191,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
         # the user pool produces no match.
         self._pools: dict[str, tuple[Resolver, list[Candidate], list[Candidate]]] = {}
         self._pool_locks: dict[str, asyncio.Lock] = {}
+        self._resolved_lang_cache: dict[str, str] = {}
         self._builtin_intents_cache: dict[str, dict[str, list[str]]] = {}
         self._self_check_issue_ids: dict[str, str] = {}
         self._rebuild_handle = None  # async_call_later cancel handle
@@ -281,6 +282,26 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             except Exception:  # pragma: no cover
                 _LOGGER.exception("[%s] pool rebuild failed", lang)
 
+    def _resolve_language(self, language: str) -> str:
+        """
+        Resolve a region-qualified language to the supported intents variant HA would actually load.
+        """
+        cached = self._resolved_lang_cache.get(language)
+        if cached is not None:
+            return cached
+        resolved = language
+        try:
+            from home_assistant_intents import get_languages  # type: ignore
+            from homeassistant.util import language as language_util
+
+            matches = language_util.matches(language, set(get_languages()))
+            if matches:
+                resolved = matches[0]
+        except Exception:
+            _LOGGER.debug("language resolve failed for %s; using as-is", language, exc_info=True)
+        self._resolved_lang_cache[language] = resolved
+        return resolved
+
     async def _async_get_builtin_override(
         self, language: str, resolver: Resolver
     ) -> list[Candidate]:
@@ -289,6 +310,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
 
         Reads from the per-language ``_builtin_intents_cache`` populated by ``_async_get_pool``.
         """
+        language = self._resolve_language(language)
         builtin_intents = self._builtin_intents_cache.get(language, {})
         return await self.hass.async_add_executor_job(
             self._expand_intents, builtin_intents, resolver
@@ -297,6 +319,7 @@ class ClosestIntentAgent(conversation.ConversationEntity):
     async def _async_get_pool(
         self, language: str
     ) -> tuple[Resolver, list[Candidate], list[Candidate]]:
+        language = self._resolve_language(language)
         cached = self._pools.get(language)
         if cached is not None:
             return cached
@@ -386,15 +409,11 @@ class ClosestIntentAgent(conversation.ConversationEntity):
             )
             return slot_lists, rules, user_intents, builtin_intents
 
-        # Force-load the language pack so _lang_intents[language] exists.
-        await agent.async_get_or_load_intents(language)
-
-        lang_intents = agent._lang_intents.get(language)
+        lang_intents = await agent.async_get_or_load_intents(language)
         if lang_intents is None:
             _LOGGER.debug(
-                "[%s] default agent has no intents for this language (available: %s)",
+                "[%s] default agent has no intents for this language",
                 language,
-                list(agent._lang_intents.keys()),
             )
             return slot_lists, rules, user_intents, builtin_intents
 

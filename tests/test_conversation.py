@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -30,6 +31,7 @@ if str(PKG_DIR) not in sys.path:
 
 import conversation as agent_module  # type: ignore  # noqa: E402
 from const import (  # type: ignore  # noqa: E402
+    DEFAULT_STARTUP_SELF_CHECK,
     DOMAIN,
     KEY_CONVERSATION_EXPANSION_RULES,
     KEY_CONVERSATION_INTENTS,
@@ -123,6 +125,7 @@ def _make_agent(
     builtin_allowlist=None,
     slot_extraction: bool = True,
     fallback_agent_id: str = "conversation.home_assistant",
+    startup_self_check: bool = DEFAULT_STARTUP_SELF_CHECK,
 ) -> ClosestIntentAgent:
     return ClosestIntentAgent(
         hass,
@@ -134,6 +137,7 @@ def _make_agent(
         builtin_allowlist=builtin_allowlist,
         slot_extraction=slot_extraction,
         fallback_agent_id=fallback_agent_id,
+        startup_self_check=startup_self_check,
         entry_id="TESTENTRY",
     )
 
@@ -526,7 +530,7 @@ async def test_self_check_clean_creates_no_issue(
         "PumpeAn": ["Pumpe an"],
         "PumpeAus": ["Pumpe aus"],
     }
-    agent = _make_agent(hass, threshold=70)
+    agent = _make_agent(hass, threshold=70, startup_self_check=True)
     await agent.async_added_to_hass()
 
     assert _issue_registry_state == {}
@@ -540,7 +544,7 @@ async def test_self_check_detects_clash(hass, _capture_async_converse, _issue_re
         "IntentA": ["Foo bar"],
         "IntentB": ["Foo bar"],
     }
-    agent = _make_agent(hass, threshold=70)
+    agent = _make_agent(hass, threshold=70, startup_self_check=True)
     await agent.async_added_to_hass()
 
     found = _find_self_check_issue(_issue_registry_state)
@@ -566,7 +570,7 @@ async def test_self_check_pretty_pattern_restores_slot_names(
         "Add_Shopping": ["Add {item} to the list"],
         "Add_Todo": ["Add {task} to the list"],
     }
-    agent = _make_agent(hass, threshold=70)
+    agent = _make_agent(hass, threshold=70, startup_self_check=True)
     await agent.async_added_to_hass()
 
     found = _find_self_check_issue(_issue_registry_state)
@@ -589,7 +593,7 @@ async def test_self_check_clears_prior_issue_on_rebuild(
         "IntentA": ["Foo bar"],
         "IntentB": ["Foo bar"],
     }
-    agent = _make_agent(hass, threshold=70)
+    agent = _make_agent(hass, threshold=70, startup_self_check=True)
     await agent.async_added_to_hass()
 
     found = _find_self_check_issue(_issue_registry_state)
@@ -607,6 +611,7 @@ async def test_self_check_clears_prior_issue_on_rebuild(
         builtin_allowlist=None,
         slot_extraction=True,
         fallback_agent_id="conversation.home_assistant",
+        startup_self_check=True,
     )
     # Force a fresh pool build (and therefore a fresh self-check run).
     await agent._async_get_pool("de")
@@ -626,7 +631,7 @@ async def test_self_check_replaces_prior_issue_when_count_changes(
         "IntentB": ["Foo bar"],
         "IntentC": ["Foo bar"],
     }
-    agent = _make_agent(hass, threshold=70)
+    agent = _make_agent(hass, threshold=70, startup_self_check=True)
     await agent.async_added_to_hass()
 
     found = _find_self_check_issue(_issue_registry_state)
@@ -648,6 +653,7 @@ async def test_self_check_replaces_prior_issue_when_count_changes(
         builtin_allowlist=None,
         slot_extraction=True,
         fallback_agent_id="conversation.home_assistant",
+        startup_self_check=True,
     )
     await agent._async_get_pool("de")
 
@@ -687,6 +693,41 @@ async def test_self_check_disabled(
     await agent.async_added_to_hass()
 
     assert _issue_registry_state == {}
+
+
+@pytest.mark.asyncio
+async def test_region_language_resolves_to_base_variant(hass, monkeypatch):
+    """
+    A region variant like ``en-AU`` must resolve to the supported intents variant (``en``)
+    the way HA's DefaultAgent does (issue #21).
+    """
+    hai = types.ModuleType("home_assistant_intents")
+    hai.get_languages = lambda: ["en", "de", "fr"]
+    monkeypatch.setitem(sys.modules, "home_assistant_intents", hai)
+
+    util = types.ModuleType("homeassistant.util")
+    lang_mod = types.ModuleType("homeassistant.util.language")
+
+    def _matches(target, supported, country=None):
+        base = target.split("-")[0]
+        return [base] if base in supported else []
+
+    lang_mod.matches = _matches
+    util.language = lang_mod
+    monkeypatch.setitem(sys.modules, "homeassistant.util", util)
+    monkeypatch.setitem(sys.modules, "homeassistant.util.language", lang_mod)
+
+    agent = _make_agent(hass, threshold=70)
+    assert agent._resolve_language("en-AU") == "en"
+    assert agent._resolve_language("de-CH") == "de"
+    assert agent._resolve_language("en") == "en"
+    assert agent._resolve_language("xx-YY") == "xx-YY"
+
+    await agent._async_get_pool("en-AU")
+    assert "en" in agent._pools
+    assert "en-AU" not in agent._pools
+    pool_en = await agent._async_get_pool("en")
+    assert pool_en is agent._pools["en"]
 
 
 @pytest.mark.asyncio
