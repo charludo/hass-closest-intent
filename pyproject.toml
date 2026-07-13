@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "closest_intent"
-version = "0.2.0"
+version = "0.2.1"
 description = "Fuzzy intent matcher for HomeAssistant. Garbled STT output in, actual intent out."
 readme = "README.md"
 license = { text = "AGPL-3.0" }
